@@ -101,11 +101,26 @@ Output:
 
 - `reports/coverage/YYYY-MM-DD_coverage.md`
 
+### Backpool Analyse (Goldtitel)
+
+Analysiert ältere Songs je Sender im gewählten Zeitraum.
+
+```bash
+node src/cli.js analyze-backpool --config config.yaml
+node src/cli.js analyze-backpool --config config.yaml --from 2025-01-01 --to 2026-02-27 --years 5 --min-plays 3 --top 15
+```
+
+Output:
+
+- `reports/backpool/YYYY-MM-DD_YYYY-MM-DD_backpool.md`
+
 ### Daily Job (kombiniert)
 
 ```bash
 node src/cli.js daily-job --config config.yaml --make-report --audit-coverage
 ```
+
+Hinweis: `daily-job` wertet den **gestrigen** Berlin-Tag aus (stabile, abgeschlossene Tagesdaten).
 
 ### API
 
@@ -114,6 +129,8 @@ node src/cli.js api --config config.yaml --port 8787
 node src/cli.js api --config config.yaml --port 8787 --no-startup-report
 node src/cli.js api --config config.yaml --port 8787 --schedule-daily --daily-hour 23
 ```
+
+Hinweis: Der geplante Tageslauf über `--schedule-daily` wertet ebenfalls den **gestrigen** Berlin-Tag aus.
 
 Hinweis: Bei belegtem Port wird automatisch auf den nächsten freien Port gewechselt.
 

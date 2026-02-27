@@ -45,4 +45,24 @@ describe('normalizeArtistTitle', () => {
     expect(isLikelyJingleLike('Good Morning Show', 'Feel Good Friday')).toBe(true);
     expect(isLikelyJingleLike('Bruno Mars', '24K Magic')).toBe(false);
   });
+
+  it('marks unknown placeholders as noise', () => {
+    expect(isLikelyNoiseTrack('Unknown', 'Unknown')).toBe(true);
+    expect(isLikelyNoiseTrack('n/a', 'Title')).toBe(true);
+  });
+
+  it('marks station self-promos as noise/jingle', () => {
+    expect(
+      isLikelyNoiseTrack('bigfm', 'bigfm - deutschlands biggste beats', {
+        stationName: 'bigFM',
+        stationId: 'bigfm'
+      })
+    ).toBe(true);
+    expect(
+      isLikelyJingleLike('bigfm', 'bigfm berlin', {
+        stationName: 'bigFM',
+        stationId: 'bigfm'
+      })
+    ).toBe(true);
+  });
 });

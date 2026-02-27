@@ -39,4 +39,21 @@ describe('parsers', () => {
     expect(plays.length).toBe(2);
     expect(plays[1].titleRaw).toBe('Kids');
   });
+
+  it('parses "Uhr - Artist - Title" and "Title von Artist" format', () => {
+    const onlineradiobox = new OnlineradioboxParser({ timezone: 'Europe/Berlin' });
+    const generic = new GenericHtmlParser({ timezone: 'Europe/Berlin' });
+    const html = fixture('playlist_von_uhr.html');
+
+    const fromOrb = onlineradiobox.parse(html, 'https://example.test');
+    expect(fromOrb.length).toBe(2);
+    expect(fromOrb[0].artistRaw).toBe('The Weeknd');
+    expect(fromOrb[0].titleRaw).toBe('Blinding Lights');
+    expect(fromOrb[1].artistRaw).toBe('The Kid Laroi');
+    expect(fromOrb[1].titleRaw).toBe("She Don't Need To Know");
+
+    const fromGeneric = generic.parse(html, 'https://example.test');
+    expect(fromGeneric.length).toBe(2);
+    expect(fromGeneric[1].artistRaw).toBe('The Kid Laroi');
+  });
 });

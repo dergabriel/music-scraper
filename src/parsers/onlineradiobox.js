@@ -2,14 +2,45 @@ import * as cheerio from 'cheerio';
 import { BaseParser } from './base.js';
 import { parsePlayedAt } from '../time.js';
 
+const INVALID_TRACK_FRAGMENT =
+  /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie)/i;
+
+function cleanContent(text) {
+  return String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^aktuell\s*/i, '')
+    .replace(/^live\s*\|\s*/i, '')
+    .replace(/^uhr\s*[-|]\s*/i, '')
+    .replace(/^[|-]\s*/, '')
+    .replace(/^platz\s+\d+\s*:\s*/i, '');
+}
+
 function split(text) {
-  const cleaned = text.replace(/\s+/g, ' ').trim();
+  const cleaned = cleanContent(text);
+  if (!cleaned) return null;
+
+  const byPattern = cleaned.match(/^(.+?)\s+(?:von|by)\s+(.+)$/i);
+  if (byPattern) {
+    const titleRaw = byPattern[1].trim();
+    const artistRaw = byPattern[2].trim();
+    if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) {
+      return { artistRaw, titleRaw };
+    }
+  }
+
   const separators = [' - ', ' – ', ' — '];
   for (const sep of separators) {
     if (cleaned.includes(sep)) {
       const [artistRaw, ...rest] = cleaned.split(sep);
       const titleRaw = rest.join(sep).trim();
-      if (artistRaw && titleRaw) return { artistRaw: artistRaw.trim(), titleRaw };
+      if (
+        artistRaw &&
+        titleRaw &&
+        !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)
+      ) {
+        return { artistRaw: artistRaw.trim(), titleRaw };
+      }
     }
   }
   return null;
@@ -17,7 +48,8 @@ function split(text) {
 
 function looksLikeNoise(text) {
   return /^(live|aktuell)\s*\|/i.test(text) ||
-    /^(du h[öo]rst|show by|install|nažalost|andere optionen|recommended|empfohlen)/i.test(text);
+    /^(du h[öo]rst|show by|install|nažalost|andere optionen|recommended|empfohlen|zuletzt gespielte titel)/i.test(text) ||
+    INVALID_TRACK_FRAGMENT.test(text);
 }
 
 function parseFromBodyText($, timezone, sourceUrl) {
@@ -39,8 +71,7 @@ function parseFromBodyText($, timezone, sourceUrl) {
     if (!timed) continue;
 
     const timeRaw = timed[1];
-    let content = timed[2].trim();
-    content = content.replace(/^platz\s+\d+\s*:\s*/i, '');
+    const content = cleanContent(timed[2]);
 
     const song = split(content);
     if (!song) continue;
@@ -62,13 +93,8 @@ function parseFromBodyText($, timezone, sourceUrl) {
   let match;
   while ((match = re.exec(blob)) !== null) {
     const timeRaw = match[1];
-    let content = match[2].trim();
+    let content = cleanContent(match[2]);
     if (!content || looksLikeNoise(content)) continue;
-
-    content = content
-      .replace(/^aktuell\s*/i, '')
-      .replace(/^live\s*\|\s*/i, '')
-      .replace(/^platz\s+\d+\s*:\s*/i, '');
 
     const song = split(content);
     if (!song) continue;
@@ -110,7 +136,7 @@ export class OnlineradioboxParser extends BaseParser {
         item = { artistRaw, titleRaw };
       } else {
         const text = el.text().replace(/\s+/g, ' ').trim();
-        item = split(text.replace(timeRaw, '').trim());
+        item = split(cleanContent(text.replace(timeRaw, '')));
       }
 
       if (!item) continue;

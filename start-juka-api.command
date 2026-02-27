@@ -1,18 +1,46 @@
 #!/bin/bash
-set -e
+set -Eeuo pipefail
 cd "$(dirname "$0")"
 
-echo "[JUKA] Starte JUKA Radio Analyzer API..."
+if [[ -t 1 ]]; then
+  BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+  GREEN='\033[32m'; RED='\033[31m'; BLUE='\033[34m'; YELLOW='\033[33m'
+else
+  BOLD=''; DIM=''; RESET=''; GREEN=''; RED=''; BLUE=''; YELLOW=''
+fi
+
+step() { echo -e "${BLUE}${BOLD}==>${RESET} $1"; }
+ok() { echo -e "${GREEN}${BOLD}[OK]${RESET} $1"; }
+warn() { echo -e "${YELLOW}${BOLD}[HINWEIS]${RESET} $1"; }
+fail() { echo -e "${RED}${BOLD}[FEHLER]${RESET} $1"; }
+
+on_error() {
+  local exit_code=$?
+  fail "API-Start fehlgeschlagen (Exit Code ${exit_code})."
+  warn "Pruefe die letzte Fehlermeldung oben."
+}
+trap on_error ERR
+
+echo -e "${BOLD}JUKA API Start${RESET} ${DIM}(Dashboard + Scheduler)${RESET}"
+
 if [ ! -d "node_modules" ]; then
-  echo "[JUKA] Installiere Abhaengigkeiten (einmalig)..."
+  step "Installiere Abhaengigkeiten (einmalig)"
   npm install
+  ok "Abhaengigkeiten installiert"
 fi
 
 if ! node -e "require.resolve('express')" >/dev/null 2>&1; then
-  echo "[JUKA] Fehlende Pakete erkannt. Installiere nach..."
+  step "Fehlende Pakete erkannt - installiere nach"
   npm install
+  ok "Pakete nachinstalliert"
 fi
 
-echo "[JUKA] API startet auf http://localhost:8787"
-echo "[JUKA] Täglicher Lauf: 23:00 Europe/Berlin"
+echo
+ok "API-Start wird vorbereitet"
+echo -e "${DIM}URL:${RESET} http://localhost:8787"
+echo -e "${DIM}Dashboard:${RESET} http://localhost:8787/dashboard"
+echo -e "${DIM}Backpool:${RESET} http://localhost:8787/backpool"
+echo -e "${DIM}Taeglicher Lauf:${RESET} 23:00 Europe/Berlin"
+echo
+step "Starte Server (CTRL+C zum Beenden)"
 node src/cli.js api --config config.yaml --port 8787 --schedule-daily --daily-hour 23

@@ -1,5 +1,22 @@
 import { fetch } from 'undici';
 
+function formatFetchError(error) {
+  if (!(error instanceof Error)) return String(error);
+  const parts = [error.message];
+  const cause = error.cause;
+
+  if (cause && typeof cause === 'object') {
+    const details = [];
+    if ('code' in cause && cause.code) details.push(`code=${cause.code}`);
+    if ('errno' in cause && cause.errno) details.push(`errno=${cause.errno}`);
+    if ('syscall' in cause && cause.syscall) details.push(`syscall=${cause.syscall}`);
+    if ('hostname' in cause && cause.hostname) details.push(`hostname=${cause.hostname}`);
+    if (details.length) parts.push(`(${details.join(', ')})`);
+  }
+
+  return parts.join(' ');
+}
+
 export class HttpFetcher {
   async fetchHtml(url) {
     const maxAttempts = 2;
@@ -23,7 +40,7 @@ export class HttpFetcher {
 
         return await res.text();
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatFetchError(error);
         lastError = new Error(`Fetch attempt ${attempt}/${maxAttempts} failed for ${url}: ${message}`);
         if (attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, 400 * attempt));

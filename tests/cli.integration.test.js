@@ -4,6 +4,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { openDb, upsertStation, insertPlayIgnore, upsertTrackMetadata } from '../src/db.js';
+import { normalizeArtistTitle } from '../src/normalize.js';
 
 const tmpDirs = [];
 
@@ -23,6 +25,22 @@ function runCli(projectRoot, cwd, args) {
 
 function toDataHtmlUrl(html) {
   return `data:text/html,${encodeURIComponent(html)}`;
+}
+
+function addPlayDirect(db, { stationId, playedAtUtcIso, artistRaw, titleRaw }) {
+  const normalized = normalizeArtistTitle(artistRaw, titleRaw);
+  insertPlayIgnore(db, {
+    station_id: stationId,
+    played_at_utc: playedAtUtcIso,
+    artist_raw: artistRaw,
+    title_raw: titleRaw,
+    artist: normalized.artist,
+    title: normalized.title,
+    track_key: normalized.trackKey,
+    source_url: 'https://example.test',
+    ingested_at_utc: '2026-02-23T10:00:00.000Z'
+  });
+  return normalized.trackKey;
 }
 
 afterEach(() => {
@@ -144,4 +162,195 @@ describe('CLI integration', () => {
     },
     30000
   );
+
+  it('runs backpool analysis and writes station gold-title report', () => {
+    const projectRoot = path.resolve('.');
+    const tmp = mkTmpDir();
+    const dbPath = path.join(tmp, 'integration.sqlite');
+    const configPath = path.join(tmp, 'config.yaml');
+
+    fs.writeFileSync(
+      configPath,
+      [
+        'stations:',
+        '  - id: "gold_station"',
+        '    name: "Gold Station"',
+        '    playlist_url: "https://example.test"',
+        '    parser: "generic_html"',
+        '    fetcher: "http"',
+        '    timezone: "Europe/Berlin"',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'gold_station',
+      name: 'Gold Station',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const oldTrackKey = addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-10T10:00:00.000Z',
+      artistRaw: 'Coldplay',
+      titleRaw: 'Viva La Vida'
+    });
+    addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-11T10:00:00.000Z',
+      artistRaw: 'Coldplay',
+      titleRaw: 'Viva La Vida'
+    });
+    addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-12T10:00:00.000Z',
+      artistRaw: 'Coldplay',
+      titleRaw: 'Viva La Vida'
+    });
+
+    const newTrackKey = addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-13T10:00:00.000Z',
+      artistRaw: 'Dua Lipa',
+      titleRaw: 'Houdini'
+    });
+    addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-14T10:00:00.000Z',
+      artistRaw: 'Dua Lipa',
+      titleRaw: 'Houdini'
+    });
+    addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-15T10:00:00.000Z',
+      artistRaw: 'Dua Lipa',
+      titleRaw: 'Houdini'
+    });
+
+    const lowConfidenceTrackKey = addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-16T10:00:00.000Z',
+      artistRaw: 'Topic',
+      titleRaw: 'Body'
+    });
+    addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-17T10:00:00.000Z',
+      artistRaw: 'Topic',
+      titleRaw: 'Body'
+    });
+    addPlayDirect(db, {
+      stationId: 'gold_station',
+      playedAtUtcIso: '2026-02-18T10:00:00.000Z',
+      artistRaw: 'Topic',
+      titleRaw: 'Body'
+    });
+
+    upsertTrackMetadata(db, {
+      track_key: oldTrackKey,
+      artist: 'coldplay',
+      title: 'viva la vida',
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 1,
+      external_track_id: null,
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: '2008-05-25T00:00:00.000Z',
+      genre: 'Pop',
+      album: 'Viva La Vida',
+      label: 'Parlophone',
+      duration_ms: 242000,
+      preview_url: null,
+      isrc: null,
+      popularity_score: 90,
+      chart_airplay_rank: null,
+      chart_single_rank: 3,
+      chart_country: 'DE',
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-02-23T10:00:00.000Z'
+    });
+    upsertTrackMetadata(db, {
+      track_key: newTrackKey,
+      artist: 'dua lipa',
+      title: 'houdini',
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 1,
+      external_track_id: null,
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: '2024-01-01T00:00:00.000Z',
+      genre: 'Pop',
+      album: 'Houdini',
+      label: 'Warner',
+      duration_ms: 210000,
+      preview_url: null,
+      isrc: null,
+      popularity_score: 90,
+      chart_airplay_rank: null,
+      chart_single_rank: 4,
+      chart_country: 'DE',
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-02-23T10:00:00.000Z'
+    });
+    upsertTrackMetadata(db, {
+      track_key: lowConfidenceTrackKey,
+      artist: 'topic',
+      title: 'body',
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 0.2,
+      external_track_id: null,
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: '2020-07-30T00:00:00.000Z',
+      genre: 'Pop',
+      album: 'Body',
+      label: 'Test',
+      duration_ms: 180000,
+      preview_url: null,
+      isrc: null,
+      popularity_score: 20,
+      chart_airplay_rank: null,
+      chart_single_rank: null,
+      chart_country: 'DE',
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-02-23T10:00:00.000Z'
+    });
+    db.close();
+
+    const backpool = runCli(projectRoot, tmp, [
+      'analyze-backpool',
+      '--config',
+      configPath,
+      '--db',
+      dbPath,
+      '--from',
+      '2026-02-01',
+      '--to',
+      '2026-02-28',
+      '--years',
+      '5',
+      '--min-plays',
+      '3',
+      '--top',
+      '10'
+    ]);
+    expect(backpool.status).toBe(0);
+
+    const mdPath = path.join(tmp, 'reports', 'backpool', '2026-02-01_2026-02-28_backpool.md');
+    expect(fs.existsSync(mdPath)).toBe(true);
+    const md = fs.readFileSync(mdPath, 'utf8');
+    expect(md).toContain('Gold Station');
+    expect(md).toContain('coldplay - viva la vida');
+    expect(md).not.toContain('dua lipa - houdini');
+    expect(md).not.toContain('topic - body');
+  });
 });

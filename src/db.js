@@ -14,8 +14,29 @@ export function openDb(dbPath) {
   const schemaPath = path.resolve(__dirname, '../schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf8');
   db.exec(schema);
+  ensureTrackMetadataColumns(db);
 
   return db;
+}
+
+function ensureTrackMetadataColumns(db) {
+  const existing = new Set(
+    db.prepare("select name from pragma_table_info('track_metadata')").all().map((row) => row.name)
+  );
+  const required = {
+    album: 'text',
+    label: 'text',
+    duration_ms: 'integer',
+    preview_url: 'text',
+    isrc: 'text',
+    chart_country: 'text'
+  };
+
+  for (const [name, type] of Object.entries(required)) {
+    if (!existing.has(name)) {
+      db.exec(`alter table track_metadata add column ${name} ${type}`);
+    }
+  }
 }
 
 export function upsertStation(db, station) {
@@ -69,6 +90,29 @@ export function getStationTrackCounts(db, stationId, startUtcIso, endUtcIso) {
       and played_at_utc >= ?
       and played_at_utc < ?
     group by track_key
+    order by count desc, artist asc, title asc
+  `);
+  return stmt.all(stationId, startUtcIso, endUtcIso);
+}
+
+export function getStationTrackCountsWithMetadata(db, stationId, startUtcIso, endUtcIso) {
+  const stmt = db.prepare(`
+    select
+      p.track_key,
+      min(p.artist) as artist,
+      min(p.title) as title,
+      count(*) as count,
+      min(m.release_date_utc) as release_date_utc,
+      min(m.verification_confidence) as verification_confidence,
+      min(m.verified_exists) as verified_exists,
+      min(m.genre) as genre,
+      min(m.album) as album
+    from plays p
+    left join track_metadata m on m.track_key = p.track_key
+    where p.station_id = ?
+      and p.played_at_utc >= ?
+      and p.played_at_utc < ?
+    group by p.track_key
     order by count desc, artist asc, title asc
   `);
   return stmt.all(stationId, startUtcIso, endUtcIso);
@@ -214,9 +258,15 @@ export function getTrackMetadata(db, trackKey) {
       artwork_url,
       release_date_utc,
       genre,
+      album,
+      label,
+      duration_ms,
+      preview_url,
+      isrc,
       popularity_score,
       chart_airplay_rank,
       chart_single_rank,
+      chart_country,
       social_viral_score,
       payload_json,
       last_checked_utc
@@ -239,9 +289,15 @@ export function upsertTrackMetadata(db, row) {
       artwork_url,
       release_date_utc,
       genre,
+      album,
+      label,
+      duration_ms,
+      preview_url,
+      isrc,
       popularity_score,
       chart_airplay_rank,
       chart_single_rank,
+      chart_country,
       social_viral_score,
       payload_json,
       last_checked_utc
@@ -257,9 +313,15 @@ export function upsertTrackMetadata(db, row) {
       @artwork_url,
       @release_date_utc,
       @genre,
+      @album,
+      @label,
+      @duration_ms,
+      @preview_url,
+      @isrc,
       @popularity_score,
       @chart_airplay_rank,
       @chart_single_rank,
+      @chart_country,
       @social_viral_score,
       @payload_json,
       @last_checked_utc
@@ -275,9 +337,15 @@ export function upsertTrackMetadata(db, row) {
       artwork_url = excluded.artwork_url,
       release_date_utc = excluded.release_date_utc,
       genre = excluded.genre,
+      album = excluded.album,
+      label = excluded.label,
+      duration_ms = excluded.duration_ms,
+      preview_url = excluded.preview_url,
+      isrc = excluded.isrc,
       popularity_score = excluded.popularity_score,
       chart_airplay_rank = excluded.chart_airplay_rank,
       chart_single_rank = excluded.chart_single_rank,
+      chart_country = excluded.chart_country,
       social_viral_score = excluded.social_viral_score,
       payload_json = excluded.payload_json,
       last_checked_utc = excluded.last_checked_utc

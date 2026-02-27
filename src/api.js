@@ -14,11 +14,12 @@ import {
   getTrackStationCounts,
   getNewTracksInWeek
 } from './db.js';
-import { BERLIN_TZ, buildDayRangeBerlin, buildWeekRanges } from './time.js';
+import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackTotals } from './trends.js';
-import { runDailyEvaluation, runIngest, nextBerlinTime } from './services.js';
+import { runDailyEvaluation, runIngest, nextBerlinTime, runBackpoolAnalysis } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
+import { TrackVerifier } from './trackVerifier.js';
 
 const BUCKETS = new Set(['day', 'week', 'month', 'year']);
 const require = createRequire(import.meta.url);
@@ -62,7 +63,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     docs: (_req, res) => {
       res.json({
         name: 'JUKA Radio Playlist Analyzer API',
-        pages: ['GET /dashboard', 'GET /tracks'],
+        pages: ['GET /dashboard', 'GET /backpool', 'GET /tracks'],
         endpoints: [
           'GET /api/health',
           'GET /api/docs',
@@ -73,8 +74,10 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/tracks/:trackKey/totals?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/stations?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/meta',
+          'POST /api/tracks/:trackKey/meta/refresh',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20',
+          'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=3&top=20&minConfidence=0.72&stationId=ID&hydrate=0',
           'POST /api/jobs/evaluate-daily {"date":"YYYY-MM-DD"}'
         ]
       });
@@ -236,6 +239,41 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       }
     },
 
+    refreshTrackMeta: async (req, res) => {
+      try {
+        const trackKey = req.params.trackKey;
+        const force = String(safeQueryValue(req.query.force) ?? '1') !== '0';
+        const db = openDb(dbPath);
+        try {
+          const identity = getTrackIdentity(db, trackKey);
+          if (!identity?.artist || !identity?.title) {
+            return res.status(404).json({ error: 'Unknown trackKey' });
+          }
+
+          const verifier = new TrackVerifier({ db, logger });
+          const result = await verifier.enrichMetadata(
+            {
+              trackKey,
+              artist: identity.artist,
+              title: identity.title
+            },
+            { forceRefresh: force }
+          );
+
+          return res.json({
+            trackKey,
+            identity,
+            metadata: result.metadata ?? null,
+            fromCache: Boolean(result.fromCache)
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
     newThisWeek: (req, res) => {
       try {
         const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
@@ -260,6 +298,39 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         } finally {
           db.close();
         }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    backpool: async (req, res) => {
+      try {
+        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
+        const from = req.query.from ? String(safeQueryValue(req.query.from)) : undefined;
+        const to = req.query.to ? String(safeQueryValue(req.query.to)) : undefined;
+        const rawYears = Number(safeQueryValue(req.query.years) ?? 5);
+        const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 3);
+        const rawTop = Number(safeQueryValue(req.query.top) ?? 20);
+        const rawMinConfidence = Number(safeQueryValue(req.query.minConfidence) ?? 0.72);
+        const hydrate = String(safeQueryValue(req.query.hydrate) ?? '0') !== '0';
+        const rawMaxMetaLookups = Number(safeQueryValue(req.query.maxMetaLookups) ?? 80);
+
+        const result = await runBackpoolAnalysis({
+          configPath,
+          dbPath,
+          from,
+          to,
+          years: Number.isFinite(rawYears) ? Math.max(1, Math.min(rawYears, 40)) : 5,
+          minTrackPlays: Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 500)) : 3,
+          top: Number.isFinite(rawTop) ? Math.max(1, Math.min(rawTop, 100)) : 20,
+          minReleaseConfidence: Number.isFinite(rawMinConfidence) ? Math.max(0, Math.min(rawMinConfidence, 1)) : 0.72,
+          stationId,
+          writeReport: false,
+          autoEnrichMissingRelease: hydrate,
+          maxMetadataLookups: Number.isFinite(rawMaxMetaLookups) ? Math.max(0, Math.min(rawMaxMetaLookups, 400)) : 80,
+          logger
+        });
+        return res.json(result);
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -364,6 +435,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
 
   app.get('/', (_req, res) => res.redirect('/dashboard'));
   app.get('/dashboard', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
+  app.get('/backpool', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'backpool.html')));
   app.get('/tracks', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'tracks.html')));
 
   app.get('/api/health', handlers.health);
@@ -375,8 +447,10 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/tracks/:trackKey/totals', handlers.trackTotals);
   app.get('/api/tracks/:trackKey/stations', handlers.trackStations);
   app.get('/api/tracks/:trackKey/meta', handlers.trackMeta);
+  app.post('/api/tracks/:trackKey/meta/refresh', handlers.refreshTrackMeta);
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
+  app.get('/api/insights/backpool', handlers.backpool);
   app.post('/api/jobs/evaluate-daily', handlers.evaluateDaily);
 
   return app;
@@ -423,7 +497,7 @@ export async function startApiServer({ configPath, dbPath, port = 8787, schedule
       setTimeout(async () => {
         try {
           await runIngest({ configPath, dbPath, logger });
-          const date = buildDayRangeBerlin(DateTime.now().setZone(BERLIN_TZ).toISODate()).startBerlin.toISODate();
+          const date = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
           runDailyEvaluation({ configPath, dbPath, date, logger });
         } catch (err) {
           logger.error({ err: err instanceof Error ? err.message : String(err) }, 'daily scheduled job failed');

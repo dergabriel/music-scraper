@@ -91,6 +91,7 @@ describe('api handlers', () => {
       .filter((layer) => layer.route?.path)
       .map((layer) => layer.route.path);
     expect(routePaths).toContain('/dashboard');
+    expect(routePaths).toContain('/backpool');
     expect(routePaths).toContain('/tracks');
     expect(routePaths).toContain('/api/tracks');
 
@@ -158,6 +159,25 @@ describe('api handlers', () => {
     h.stationReport({ params: { stationId: 'planet_radio' }, query: { weekStart: '2026-02-23' } }, stationReportRes);
     expect(stationReportRes.statusCode).toBe(200);
     expect(stationReportRes.body.report.station.id).toBe('planet_radio');
+
+    const backpoolRes = mkRes();
+    await h.backpool(
+      {
+        query: {
+          stationId: 'planet_radio',
+          from: '2026-01-01',
+          to: '2026-02-24',
+          years: '1',
+          minPlays: '1',
+          top: '5'
+        }
+      },
+      backpoolRes
+    );
+    expect(backpoolRes.statusCode).toBe(200);
+    expect(Array.isArray(backpoolRes.body.rows)).toBe(true);
+    expect(backpoolRes.body.rows.length).toBe(1);
+    expect(backpoolRes.body.rows[0].stationId).toBe('planet_radio');
 
     const evalRes = mkRes();
     await h.evaluateDaily({ body: { date: '2026-02-23' } }, evalRes);

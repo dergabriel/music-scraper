@@ -8,6 +8,7 @@ import {
   upsertStation,
   insertPlayIgnore,
   getStationTrackCounts,
+  getStationTrackCountsWithMetadata,
   getStationTotalPlays,
   getStationPlayedAtUtc,
   getOverallTrackCounts,
@@ -63,6 +64,20 @@ function coveredBerlinHours(plays, timezone) {
     hours.add(dt.toFormat('yyyy-LL-dd HH'));
   }
   return hours.size;
+}
+
+function parseIsoDate(value, label) {
+  if (!value) return null;
+  const dt = DateTime.fromISO(value, { zone: BERLIN_TZ }).startOf('day');
+  if (!dt.isValid) {
+    throw new Error(`Invalid ${label} date: ${value}`);
+  }
+  return dt;
+}
+
+function releaseAgeYears(releaseDate, endDate) {
+  const diff = endDate.diff(releaseDate, 'years').years;
+  return Number.isFinite(diff) ? Math.max(0, diff) : null;
 }
 
 export async function runIngest({ configPath, dbPath, logger }) {
@@ -141,7 +156,7 @@ export async function runIngest({ configPath, dbPath, logger }) {
           stationId: station.id
         });
         if (
-          isLikelyNoiseTrack(play.artistRaw, play.titleRaw) ||
+          isLikelyNoiseTrack(play.artistRaw, play.titleRaw, { stationName: station.name, stationId: station.id }) ||
           normalized.artist.length < 2 ||
           normalized.title.length < 2
         ) {
@@ -149,7 +164,10 @@ export async function runIngest({ configPath, dbPath, logger }) {
           continue;
         }
 
-        const suspicious = isLikelyJingleLike(play.artistRaw, play.titleRaw);
+        const suspicious = isLikelyJingleLike(play.artistRaw, play.titleRaw, {
+          stationName: station.name,
+          stationId: station.id
+        });
         if (verifier && (verifyAllTracks || suspicious)) {
           let verified = verifiedByTrackKey.get(normalized.trackKey);
           if (!verified) {
@@ -361,6 +379,7 @@ export function runCoverageAudit({ configPath, dbPath, date, logger }) {
   const config = loadConfig(configPath);
   const db = openDb(dbPath);
   const day = date || DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
+  const isCurrentBerlinDay = day === berlinTodayIso();
   const range = buildDayRangeBerlin(day);
 
   const rows = [];
@@ -406,6 +425,10 @@ export function runCoverageAudit({ configPath, dbPath, date, logger }) {
   lines.push('');
   lines.push(`- Stations checked: **${rows.length}**`);
   lines.push(`- Warnings: **${warnings}**`);
+  if (isCurrentBerlinDay) {
+    lines.push('- Note: This is the current Berlin day and may be incomplete. Prefer auditing yesterday.');
+    logger.warn({ dateBerlin: day }, 'coverage audit is running for current Berlin day (incomplete window possible)');
+  }
 
   fs.mkdirSync(path.dirname(mdPath), { recursive: true });
   fs.writeFileSync(mdPath, `${lines.join('\n')}\n`, 'utf8');
@@ -413,4 +436,249 @@ export function runCoverageAudit({ configPath, dbPath, date, logger }) {
   db.close();
   logger.info({ dateBerlin: day, stations: rows.length, warnings, mdPath }, 'coverage audit completed');
   return { dateBerlin: day, rows, warnings, mdPath };
+}
+
+export async function runBackpoolAnalysis({
+  configPath,
+  dbPath,
+  from,
+  to,
+  years = 5,
+  minTrackPlays = 3,
+  top = 20,
+  stationId,
+  writeReport = true,
+  autoEnrichMissingRelease = false,
+  maxMetadataLookups = 80,
+  minReleaseConfidence = 0.72,
+  logger
+}) {
+  const config = loadConfig(configPath);
+  const db = openDb(dbPath);
+
+  const toBerlin = parseIsoDate(to, 'to') || DateTime.now().setZone(BERLIN_TZ).startOf('day');
+  const fromBerlin = parseIsoDate(from, 'from') || toBerlin.minus({ days: 365 }).startOf('day');
+  if (fromBerlin > toBerlin) {
+    db.close();
+    throw new Error(`Invalid range: from (${fromBerlin.toISODate()}) must be <= to (${toBerlin.toISODate()})`);
+  }
+
+  const rangeStartUtcIso = fromBerlin.toUTC().toISO();
+  const rangeEndUtcIso = toBerlin.plus({ days: 1 }).toUTC().toISO();
+  const backpoolCutoff = toBerlin.minus({ years: Number(years) || 5 }).startOf('day');
+  const topLimit = Math.max(1, Number(top) || 20);
+  const confidenceFloor = Math.max(0, Math.min(Number(minReleaseConfidence) || 0, 1));
+
+  const selectedStations = stationId
+    ? config.stations.filter((station) => station.id === stationId)
+    : config.stations;
+  if (stationId && selectedStations.length === 0) {
+    db.close();
+    throw new Error(`Unknown station id: ${stationId}`);
+  }
+
+  const enrichEnabled = Boolean(autoEnrichMissingRelease) && process.env.NODE_ENV !== 'test';
+  const verifier = enrichEnabled ? new TrackVerifier({ db, logger }) : null;
+  let enrichBudget = Math.max(0, Number(maxMetadataLookups) || 0);
+
+  const rows = [];
+  for (const station of selectedStations) {
+    upsertStation(db, station);
+    let trackRows = getStationTrackCountsWithMetadata(db, station.id, rangeStartUtcIso, rangeEndUtcIso)
+      .filter((row) =>
+        !isLikelyNoiseTrack(row.artist, row.title, { stationName: station.name, stationId: station.id }) &&
+        !isLikelyJingleLike(row.artist, row.title, { stationName: station.name, stationId: station.id })
+      );
+
+    if (verifier && enrichBudget > 0) {
+      const enrichCandidates = trackRows
+        .filter((row) => !row.release_date_utc && Number(row.count || 0) >= Number(minTrackPlays || 1))
+        .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
+        .slice(0, enrichBudget);
+
+      for (const candidate of enrichCandidates) {
+        try {
+          await verifier.enrichMetadata({
+            trackKey: candidate.track_key,
+            artist: candidate.artist,
+            title: candidate.title
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger?.warn({ trackKey: candidate.track_key, error: message }, 'backpool metadata enrichment failed');
+        }
+      }
+
+      enrichBudget = Math.max(0, enrichBudget - enrichCandidates.length);
+      if (enrichCandidates.length > 0) {
+        trackRows = getStationTrackCountsWithMetadata(db, station.id, rangeStartUtcIso, rangeEndUtcIso)
+          .filter((row) =>
+            !isLikelyNoiseTrack(row.artist, row.title, { stationName: station.name, stationId: station.id }) &&
+            !isLikelyJingleLike(row.artist, row.title, { stationName: station.name, stationId: station.id })
+          );
+      }
+    }
+
+    const totalPlays = getStationTotalPlays(db, station.id, rangeStartUtcIso, rangeEndUtcIso);
+    const classifiedRows = trackRows.map((row) => {
+      const release = row.release_date_utc ? DateTime.fromISO(row.release_date_utc, { zone: 'utc' }).setZone(BERLIN_TZ) : null;
+      const parsedConfidence = Number(row.verification_confidence);
+      const confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : null;
+      const verifiedExists = row.verified_exists === null || row.verified_exists === undefined ? null : Number(row.verified_exists);
+
+      let metadataIssue = null;
+      if (!row.release_date_utc) {
+        metadataIssue = 'missing_release';
+      } else if (!release || !release.isValid) {
+        metadataIssue = 'invalid_release';
+      } else if (verifiedExists === 0) {
+        metadataIssue = 'rejected_match';
+      } else if (confidence === null) {
+        metadataIssue = 'missing_confidence';
+      } else if (confidence < confidenceFloor) {
+        metadataIssue = 'low_confidence';
+      }
+
+      return {
+        ...row,
+        release,
+        verification_confidence: confidence,
+        verified_exists: verifiedExists,
+        metadataIssue,
+        hasValidatedRelease: Boolean(release && release.isValid && metadataIssue === null)
+      };
+    });
+
+    const withRelease = classifiedRows.filter((row) => row.hasValidatedRelease);
+
+    const backpoolTracks = withRelease
+      .filter((row) => row.release <= backpoolCutoff && Number(row.count || 0) >= Number(minTrackPlays || 1))
+      .sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
+    const oldestTracks = withRelease
+      .slice()
+      .sort((a, b) => {
+        if (a.release < b.release) return -1;
+        if (a.release > b.release) return 1;
+        return Number(b.count || 0) - Number(a.count || 0);
+      });
+
+    const backpoolPlays = backpoolTracks.reduce((sum, row) => sum + Number(row.count || 0), 0);
+    const share = totalPlays > 0 ? backpoolPlays / totalPlays : 0;
+    const avgAgeYears =
+      backpoolTracks.length > 0
+        ? backpoolTracks.reduce((sum, row) => sum + (releaseAgeYears(row.release, toBerlin) ?? 0), 0) / backpoolTracks.length
+        : 0;
+
+    const mapTrack = (row) => ({
+      trackKey: row.track_key,
+      artist: row.artist,
+      title: row.title,
+      plays: Number(row.count || 0),
+      releaseDate: row.release.toISODate(),
+      ageYears: releaseAgeYears(row.release, toBerlin),
+      verificationConfidence: row.verification_confidence,
+      genre: row.genre ?? null,
+      album: row.album ?? null
+    });
+    const unknownReleaseTracks = classifiedRows
+      .filter((row) => !row.hasValidatedRelease && Number(row.count || 0) >= Number(minTrackPlays || 1))
+      .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
+      .slice(0, topLimit)
+      .map((row) => ({
+        trackKey: row.track_key,
+        artist: row.artist,
+        title: row.title,
+        plays: Number(row.count || 0),
+        releaseDate: row.release && row.release.isValid ? row.release.toISODate() : null,
+        ageYears: null,
+        verificationConfidence: row.verification_confidence,
+        metadataIssue: row.metadataIssue,
+        genre: row.genre ?? null,
+        album: row.album ?? null
+      }));
+
+    const unvalidatedReleaseCount = classifiedRows.filter((row) => !row.hasValidatedRelease).length;
+
+    rows.push({
+      stationId: station.id,
+      stationName: station.name,
+      totalPlays,
+      totalTracks: classifiedRows.length,
+      tracksWithRelease: withRelease.length,
+      unvalidatedReleaseCount,
+      minReleaseConfidence: confidenceFloor,
+      backpoolTrackCount: backpoolTracks.length,
+      backpoolPlays,
+      backpoolShare: share,
+      avgBackpoolAgeYears: avgAgeYears,
+      topBackpoolTracks: backpoolTracks.slice(0, topLimit).map(mapTrack),
+      oldestTracks: oldestTracks.slice(0, topLimit).map(mapTrack),
+      unknownReleaseTracks
+    });
+  }
+
+  let mdPath = null;
+  if (writeReport) {
+    mdPath = path.resolve(`reports/backpool/${fromBerlin.toISODate()}_${toBerlin.toISODate()}_backpool.md`);
+    const lines = [
+      `# JUKA Backpool Analysis ${fromBerlin.toISODate()} bis ${toBerlin.toISODate()}`,
+      '',
+      `- Definition: Backpool = Tracks mit validiertem Release-Datum **<= ${backpoolCutoff.toISODate()}** (mind. ${minTrackPlays} Plays im Zeitraum)`,
+      `- Validierung: nur Release-Daten mit Confidence **>= ${confidenceFloor.toFixed(2)}**`,
+      '',
+      '| Station | Plays gesamt | Backpool Plays | Backpool Anteil | Backpool Tracks | Datenabdeckung (Release) | Ø Alter Backpool (Jahre) |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'
+    ];
+
+    rows.forEach((row) => {
+      lines.push(
+        `| ${row.stationName} | ${row.totalPlays} | ${row.backpoolPlays} | ${(row.backpoolShare * 100).toFixed(1)}% | ${row.backpoolTrackCount} | ${row.totalTracks ? ((row.tracksWithRelease / row.totalTracks) * 100).toFixed(1) : '0.0'}% | ${row.avgBackpoolAgeYears.toFixed(1)} |`
+      );
+    });
+
+    lines.push('');
+    lines.push('## Top Backpool Tracks je Sender');
+    lines.push('');
+    rows.forEach((row) => {
+      lines.push(`### ${row.stationName}`);
+      if (!row.topBackpoolTracks.length) {
+        lines.push('- Keine Backpool-Titel im gewählten Zeitraum.');
+        lines.push('');
+        return;
+      }
+      row.topBackpoolTracks.forEach((track, index) => {
+        lines.push(
+          `${index + 1}. ${track.artist} - ${track.title} | ${track.plays} Plays | Release: ${track.releaseDate} | Alter: ${track.ageYears.toFixed(1)} Jahre`
+        );
+      });
+      lines.push('');
+    });
+
+    fs.mkdirSync(path.dirname(mdPath), { recursive: true });
+    fs.writeFileSync(mdPath, `${lines.join('\n')}\n`, 'utf8');
+  }
+
+  db.close();
+  logger?.info(
+      {
+        from: fromBerlin.toISODate(),
+        to: toBerlin.toISODate(),
+        cutoff: backpoolCutoff.toISODate(),
+        minReleaseConfidence: confidenceFloor,
+        stations: rows.length,
+        mdPath,
+        stationId: stationId ?? null,
+      writeReport,
+      autoEnrichMissingRelease: enrichEnabled
+    },
+    'backpool analysis completed'
+  );
+  return {
+    from: fromBerlin.toISODate(),
+    to: toBerlin.toISODate(),
+    cutoff: backpoolCutoff.toISODate(),
+    minReleaseConfidence: confidenceFloor,
+    rows,
+    mdPath
+  };
 }

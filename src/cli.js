@@ -3,7 +3,14 @@ import { Command } from 'commander';
 import pino from 'pino';
 import { DateTime } from 'luxon';
 import { BERLIN_TZ } from './time.js';
-import { runIngest, runReport, runDailyEvaluation, runStationReport, runCoverageAudit } from './services.js';
+import {
+  runIngest,
+  runReport,
+  runDailyEvaluation,
+  runStationReport,
+  runCoverageAudit,
+  runBackpoolAnalysis
+} from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
@@ -101,19 +108,48 @@ program
   });
 
 program
+  .command('analyze-backpool')
+  .requiredOption('--config <path>', 'Path to config.yaml')
+  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--from <YYYY-MM-DD>', 'Start date in Europe/Berlin (default: 365 days ago)')
+  .option('--to <YYYY-MM-DD>', 'End date in Europe/Berlin (default: today)')
+  .option('--years <number>', 'Backpool threshold age in years', '5')
+  .option('--min-plays <number>', 'Minimum plays per track in range', '3')
+  .option('--min-confidence <number>', 'Minimum metadata confidence (0-1) for valid release dates', '0.72')
+  .option('--top <number>', 'Top backpool tracks per station in report', '20')
+  .action(async (opts) => {
+    try {
+      await runBackpoolAnalysis({
+        configPath: opts.config,
+        dbPath: opts.db,
+        from: opts.from,
+        to: opts.to,
+        years: Number(opts.years),
+        minTrackPlays: Number(opts.minPlays),
+        minReleaseConfidence: Number(opts.minConfidence),
+        top: Number(opts.top),
+        logger
+      });
+    } catch (err) {
+      logger.error({ err: err.message }, 'backpool analysis failed');
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command('daily-job')
   .requiredOption('--config <path>', 'Path to config.yaml')
   .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
   .option('--make-report', 'Also generate weekly report for current week')
-  .option('--audit-coverage', 'Also run day coverage audit')
+  .option('--audit-coverage', 'Also run coverage audit for yesterday (Europe/Berlin)')
   .action((opts) => {
     runIngest({ configPath: opts.config, dbPath: opts.db, logger })
       .then(() => {
-        const berlinToday = DateTime.now().setZone(BERLIN_TZ).toISODate();
+        const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,
           dbPath: opts.db,
-          date: berlinToday,
+          date: berlinYesterday,
           logger
         });
 
@@ -121,7 +157,7 @@ program
           runCoverageAudit({
             configPath: opts.config,
             dbPath: opts.db,
-            date: berlinToday,
+            date: berlinYesterday,
             logger
           });
         }
@@ -166,17 +202,17 @@ program
       if (opts.startupReport) {
         logger.info('running startup ingest/evaluation/report before API boot');
         await runIngest({ configPath: opts.config, dbPath: opts.db, logger });
-        const berlinToday = DateTime.now().setZone(BERLIN_TZ).toISODate();
+        const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,
           dbPath: opts.db,
-          date: berlinToday,
+          date: berlinYesterday,
           logger
         });
         runCoverageAudit({
           configPath: opts.config,
           dbPath: opts.db,
-          date: berlinToday,
+          date: berlinYesterday,
           logger
         });
         const weekStart = DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();

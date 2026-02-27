@@ -2,14 +2,39 @@ import * as cheerio from 'cheerio';
 import { BaseParser } from './base.js';
 import { parsePlayedAt } from '../time.js';
 
+const INVALID_TRACK_FRAGMENT =
+  /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie)/i;
+
+function cleanContent(text) {
+  return String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^aktuell\s*/i, '')
+    .replace(/^live\s*\|\s*/i, '')
+    .replace(/^uhr\s*[-|]\s*/i, '')
+    .replace(/^[|-]\s*/, '')
+    .replace(/^platz\s+\d+\s*:\s*/i, '');
+}
+
 function splitArtistTitle(line) {
-  const cleaned = line.replace(/\s+/g, ' ').trim();
+  const cleaned = cleanContent(line);
+  if (!cleaned) return null;
+
+  const byPattern = cleaned.match(/^(.+?)\s+(?:von|by)\s+(.+)$/i);
+  if (byPattern) {
+    const titleRaw = byPattern[1].trim();
+    const artistRaw = byPattern[2].trim();
+    if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) {
+      return { artistRaw, titleRaw };
+    }
+  }
+
   const separators = [' - ', ' – ', ' — ', ' | '];
   for (const sep of separators) {
     if (cleaned.includes(sep)) {
       const [artistRaw, ...rest] = cleaned.split(sep);
       const titleRaw = rest.join(sep).trim();
-      if (artistRaw && titleRaw) {
+      if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) {
         return { artistRaw: artistRaw.trim(), titleRaw };
       }
     }
@@ -40,7 +65,7 @@ function parseFromBodyText($, timezone, sourceUrl) {
     const playedAt = parsePlayedAt(timed[1], timezone);
     if (!playedAt) continue;
 
-    const song = splitArtistTitle(timed[2].replace(/^platz\s+\d+\s*:\s*/i, ''));
+    const song = splitArtistTitle(cleanContent(timed[2]));
     if (!song) continue;
 
     const key = `${playedAt.toISOString()}|${song.artistRaw}|${song.titleRaw}`;
@@ -59,11 +84,7 @@ function parseFromBodyText($, timezone, sourceUrl) {
     const playedAt = parsePlayedAt(match[1], timezone);
     if (!playedAt) continue;
 
-    const content = match[2]
-      .trim()
-      .replace(/^aktuell\s*/i, '')
-      .replace(/^live\s*\|\s*/i, '')
-      .replace(/^platz\s+\d+\s*:\s*/i, '');
+    const content = cleanContent(match[2]);
     const song = splitArtistTitle(content);
     if (!song) continue;
 
@@ -105,7 +126,7 @@ export class GenericHtmlParser extends BaseParser {
       if (explicitArtist && explicitTitle) {
         artistTitle = { artistRaw: explicitArtist, titleRaw: explicitTitle };
       } else {
-        artistTitle = splitArtistTitle(text.replace(timeText || '', '').trim());
+        artistTitle = splitArtistTitle(cleanContent(text.replace(timeText || '', '').trim()));
       }
 
       if (!artistTitle) continue;

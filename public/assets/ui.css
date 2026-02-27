@@ -29,6 +29,79 @@ body {
   line-height: 1.2;
 }
 
+.track-meta-box {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: 0.9rem;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.7rem;
+  padding: 0.75rem;
+}
+
+.track-meta-cover-wrap {
+  display: grid;
+  align-items: start;
+}
+
+.track-meta-cover {
+  width: 100%;
+  max-width: 7.5rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--bs-border-color);
+  object-fit: cover;
+  background: var(--bs-secondary-bg);
+  min-height: 7.5rem;
+}
+
+.track-meta-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.8rem;
+}
+
+.track-meta-item {
+  font-size: 0.93rem;
+}
+
+.track-meta-item b {
+  font-weight: 600;
+  margin-right: 0.25rem;
+}
+
+.backpool-cards {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.backpool-card {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--bs-body-bg);
+}
+
+.backpool-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.backpool-card-title {
+  font-weight: 700;
+}
+
+.backpool-card-meta {
+  color: var(--bs-secondary-color);
+  font-size: 0.9rem;
+}
+
+.backpool-song-meta {
+  color: var(--bs-secondary-color);
+  font-size: 0.83rem;
+}
+
 .stack {
   display: grid;
   gap: 0.6rem;
@@ -82,6 +155,8 @@ body {
   border: 1px dashed var(--bs-border-color);
   border-radius: 0.6rem;
   padding: 0.25rem;
+  position: relative;
+  overflow: hidden;
 }
 
 #seriesChart {
@@ -94,6 +169,31 @@ body {
 
 .chart svg text {
   fill: var(--bs-body-color);
+}
+
+.chart svg circle,
+.chart svg rect {
+  cursor: pointer;
+}
+
+.chart-tooltip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate3d(0, 0, 0);
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--bs-border-color);
+  background: var(--bs-body-bg);
+  color: var(--bs-body-color);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  white-space: nowrap;
+  z-index: 2;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
 }
 
 .report-box {
@@ -116,5 +216,17 @@ body {
 
   #stationsChart {
     min-height: 20rem;
+  }
+
+  .track-meta-box {
+    grid-template-columns: 1fr;
+  }
+
+  .track-meta-cover {
+    max-width: 9rem;
+  }
+
+  .track-meta-list {
+    grid-template-columns: 1fr;
   }
 }
