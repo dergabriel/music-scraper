@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="de" data-theme="light" data-bs-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JUKA Tracks</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+      crossorigin="anonymous"
+    />
+    <link rel="stylesheet" href="/assets/ui.css" />
+  </head>
+  <body class="page-tracks bg-body-tertiary">
+    <nav class="navbar navbar-expand-lg bg-body border-bottom sticky-top">
+      <div class="container-fluid">
+        <a class="navbar-brand fw-semibold" href="/tracks">JUKA Tracks</a>
+        <div class="d-flex align-items-center gap-2 ms-auto">
+          <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Dashboard</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/tracks">Tracks</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/api/docs" target="_blank" rel="noreferrer">API</a>
+          <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dark</button>
+        </div>
+      </div>
+    </nav>
+
+    <main class="container-fluid py-3">
+      <section class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h2 class="h5 mb-2">Analyse-Hub</h2>
+          <p class="text-secondary mb-0">Track-Katalog mit Schnellzugriff auf Song-Analyse und station-spezifische Wochenreports.</p>
+        </div>
+      </section>
+
+      <section class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h2 class="h5 mb-3">Filter</h2>
+          <div class="row g-2 align-items-end">
+            <div class="col-12 col-lg-5">
+              <label class="form-label">Suche</label>
+              <input id="searchInput" class="form-control" type="text" placeholder="artist oder titel" />
+            </div>
+            <div class="col-12 col-lg-3">
+              <label class="form-label">Sender</label>
+              <select id="stationSelect" class="form-select"><option value="">Alle Sender</option></select>
+            </div>
+            <div class="col-8 col-lg-2">
+              <label class="form-label">Limit</label>
+              <select id="limitSelect" class="form-select">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+              </select>
+            </div>
+            <div class="col-4 col-lg-2">
+              <button id="loadBtn" class="btn btn-primary w-100" type="button">Laden</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card shadow-sm mb-3" id="stats"></section>
+
+      <section class="row g-3">
+        <div class="col-12 col-xl-8">
+          <article class="card shadow-sm">
+            <div class="card-body">
+              <p id="state" class="text-secondary mb-2">Lade Daten...</p>
+              <div class="table-wrap">
+                <table id="tracksTable" class="table table-hover align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>Track</th>
+                      <th>Plays</th>
+                      <th>Erstes Play</th>
+                      <th>Letztes Play</th>
+                      <th>Analyse</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="col-12 col-xl-4">
+          <article class="card shadow-sm station-card">
+            <div class="card-body">
+              <h2 class="h5 mb-3">Sender-Report (Woche)</h2>
+              <div class="row g-2 align-items-end mb-2">
+                <div class="col-12">
+                  <label class="form-label">Sender</label>
+                  <select id="reportStationSelect" class="form-select"><option value="">Bitte wählen</option></select>
+                </div>
+                <div class="col-7">
+                  <label class="form-label">Week Start</label>
+                  <input id="weekStartInput" class="form-control" type="date" />
+                </div>
+                <div class="col-5">
+                  <button id="loadReportBtn" class="btn btn-primary w-100" type="button">Laden</button>
+                </div>
+              </div>
+              <p id="reportState" class="text-secondary mb-1">Noch kein Sender-Report geladen.</p>
+              <p id="reportWeekNew" class="text-secondary mb-2">Neu diese Woche: -</p>
+              <div id="reportContent" class="report-box"></div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/assets/tracks.js"></script>
+  </body>
+</html>

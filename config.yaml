@@ -1,0 +1,125 @@
+stations:
+  - id: "planet_radio"
+    name: "Planet Radio"
+    playlist_url: "https://onlineradiobox.com/de/planetmore/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "dlf_nova"
+    name: "Deutschlandfunk Nova"
+    playlist_url: "https://www.deutschlandfunknova.de/playlist"
+    parser: "dlf_nova"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+    enforce_one_play_per_minute: true
+
+  - id: "1live"
+    name: "1Live"
+    playlist_url: "https://onlineradiobox.com/de/einslive/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "bigfm"
+    name: "bigFM"
+    playlist_url: "https://onlineradiobox.com/de/bigfm/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "kissfm"
+    name: "KISS FM"
+    playlist_url: "https://onlineradiobox.com/de/kissfmberlin/playlist/"
+    fallback_urls:
+      - "https://radiospinner.com/de/kiss-fm-new-beats-28374/tracklist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+    min_daily_hours: 18
+    min_daily_plays: 60
+
+  - id: "fluxfm"
+    name: "FluxFM"
+    playlist_url: "https://onlineradiobox.com/de/fluxfm/playlist/"
+    fallback_urls:
+      - "https://radiospinner.com/de/fluxfm-berlin-25229/tracklist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+    min_daily_hours: 18
+    min_daily_plays: 60
+
+  - id: "ffh"
+    name: "FFH"
+    playlist_url: "https://onlineradiobox.com/de/hitradioffh/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "youfm"
+    name: "YOU FM"
+    playlist_url: "https://onlineradiobox.com/de/youfmde/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "dasding"
+    name: "DASDING"
+    playlist_url: "https://onlineradiobox.com/de/dasdinglive/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "radio_top_40"
+    name: "Radio Top 40"
+    playlist_url: "https://onlineradiobox.com/de/radiotop40/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "energy_berlin"
+    name: "Energy Berlin"
+    playlist_url: "https://onlineradiobox.com/de/energy1034/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "ilove_radio"
+    name: "I Love Radio"
+    playlist_url: "https://onlineradiobox.com/de/ilove/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "jam_fm"
+    name: "JAM FM"
+    playlist_url: "https://onlineradiobox.com/de/jamfmberlin/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "rtl_89_0"
+    name: "89.0 RTL"
+    playlist_url: "https://onlineradiobox.com/de/890rtl/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "absolut_hot"
+    name: "Absolut HOT"
+    playlist_url: "https://onlineradiobox.com/de/absoluthot/playlist/"
+    fallback_urls:
+      - "https://radiospinner.com/de/absolut-hot-53206/tracklist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+    min_daily_hours: 18
+    min_daily_plays: 60
+
+  - id: "delta_radio"
+    name: "delta radio"
+    playlist_url: "https://onlineradiobox.com/de/deltaradio/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"

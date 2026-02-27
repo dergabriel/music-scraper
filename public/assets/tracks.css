@@ -1,0 +1,44 @@
+:root {
+  --bg: #f3f2ee;
+  --surface: #ffffff;
+  --ink: #1f262e;
+  --muted: #66737f;
+  --line: #d8dfdf;
+  --brand: #b45309;
+}
+
+html[data-theme='dark'] {
+  --bg: #12100e;
+  --surface: #1a1714;
+  --ink: #f0e7df;
+  --muted: #b2a79c;
+  --line: #2f2a25;
+  --brand: #f59e0b;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Sora", "Avenir Next", sans-serif; background: linear-gradient(180deg, var(--bg), color-mix(in srgb, var(--bg) 80%, #000 20%)); color: var(--ink); }
+.hero { display: flex; justify-content: space-between; align-items: end; padding: 1rem 1.2rem; border-bottom: 1px solid var(--line); }
+.hero h1 { margin: 0; font-size: 1.65rem; }
+.hero p { margin: .25rem 0 0; color: var(--muted); }
+nav { display: flex; gap: .5rem; flex-wrap: wrap; }
+nav a, .toggle { text-decoration: none; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: .45rem .7rem; border-radius: .5rem; cursor: pointer; }
+nav a.active { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 20%, transparent); }
+.container { padding: 1rem; display: grid; gap: .8rem; max-width: 1300px; margin: 0 auto; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: .85rem; padding: .8rem; }
+.toolbar { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: .65rem; align-items: end; }
+label { display: grid; gap: .25rem; color: var(--muted); font-size: .86rem; }
+input, select, .btn { border: 1px solid var(--line); border-radius: .5rem; padding: .5rem; font: inherit; background: transparent; color: var(--ink); }
+.btn { background: var(--brand); color: #fff; border-color: var(--brand); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; }
+.stats .item { border: 1px solid var(--line); border-radius: .6rem; padding: .6rem; }
+.stats .item b { display: block; font-size: 1.2rem; }
+.table-wrap { overflow: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .52rem; border-bottom: 1px solid var(--line); text-align: left; }
+tbody tr:hover { background: color-mix(in srgb, var(--brand) 14%, transparent); }
+.hint { color: var(--muted); }
+@media (max-width: 980px) {
+  .toolbar { grid-template-columns: 1fr 1fr; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+}

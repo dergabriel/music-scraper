@@ -1,0 +1,131 @@
+import * as cheerio from 'cheerio';
+import { BaseParser } from './base.js';
+import { parsePlayedAt } from '../time.js';
+
+function splitArtistTitle(line) {
+  const cleaned = line.replace(/\s+/g, ' ').trim();
+  const separators = [' - ', ' – ', ' — ', ' | '];
+  for (const sep of separators) {
+    if (cleaned.includes(sep)) {
+      const [artistRaw, ...rest] = cleaned.split(sep);
+      const titleRaw = rest.join(sep).trim();
+      if (artistRaw && titleRaw) {
+        return { artistRaw: artistRaw.trim(), titleRaw };
+      }
+    }
+  }
+  return null;
+}
+
+function extractTime(text) {
+  const match = text.match(/\b(?:\d{1,2}:\d{2}|\d{2}\.\d{2}\.\d{2,4}\s+\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2})\b/);
+  return match ? match[0] : null;
+}
+
+function parseFromBodyText($, timezone, sourceUrl) {
+  const bodyText = $('body').text();
+  const lines = bodyText
+    .split('\n')
+    .map((x) => x.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  const plays = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const timed =
+      line.match(/^(\d{1,2}:\d{2})\s*\|\s*(.+)$/) ||
+      line.match(/^(\d{1,2}:\d{2})\s+(.+)$/);
+    if (!timed) continue;
+
+    const playedAt = parsePlayedAt(timed[1], timezone);
+    if (!playedAt) continue;
+
+    const song = splitArtistTitle(timed[2].replace(/^platz\s+\d+\s*:\s*/i, ''));
+    if (!song) continue;
+
+    const key = `${playedAt.toISOString()}|${song.artistRaw}|${song.titleRaw}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    plays.push({ playedAt, artistRaw: song.artistRaw, titleRaw: song.titleRaw, sourceUrl });
+  }
+
+  if (plays.length) return plays;
+
+  const blob = bodyText.replace(/\s+/g, ' ').trim();
+  const re = /(\d{1,2}:\d{2})\s+(.+?)(?=\s+\d{1,2}:\d{2}\s+|$)/g;
+  let match;
+  while ((match = re.exec(blob)) !== null) {
+    const playedAt = parsePlayedAt(match[1], timezone);
+    if (!playedAt) continue;
+
+    const content = match[2]
+      .trim()
+      .replace(/^aktuell\s*/i, '')
+      .replace(/^live\s*\|\s*/i, '')
+      .replace(/^platz\s+\d+\s*:\s*/i, '');
+    const song = splitArtistTitle(content);
+    if (!song) continue;
+
+    const key = `${playedAt.toISOString()}|${song.artistRaw}|${song.titleRaw}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    plays.push({ playedAt, artistRaw: song.artistRaw, titleRaw: song.titleRaw, sourceUrl });
+  }
+
+  return plays;
+}
+
+export class GenericHtmlParser extends BaseParser {
+  parse(html, sourceUrl) {
+    const $ = cheerio.load(html);
+    const plays = [];
+    const seen = new Set();
+
+    const candidates = $('tr, li, article, .playlist-item, .track, .song, .entry, .item').toArray();
+    for (const node of candidates) {
+      const element = $(node);
+      const text = element.text().replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+
+      const timeText =
+        element.find('time').first().attr('datetime') ||
+        element.find('time').first().text().trim() ||
+        element.find('.time, .timestamp, .playlist-time, .uhrzeit').first().text().trim() ||
+        extractTime(text);
+
+      const parsedTime = parsePlayedAt(timeText, this.timezone);
+      if (!parsedTime) continue;
+
+      const explicitArtist = element.find('.artist').first().text().trim();
+      const explicitTitle = element.find('.title, .song-title, .track-title').first().text().trim();
+
+      let artistTitle = null;
+      if (explicitArtist && explicitTitle) {
+        artistTitle = { artistRaw: explicitArtist, titleRaw: explicitTitle };
+      } else {
+        artistTitle = splitArtistTitle(text.replace(timeText || '', '').trim());
+      }
+
+      if (!artistTitle) continue;
+
+      const key = `${parsedTime.toISOString()}|${artistTitle.artistRaw}|${artistTitle.titleRaw}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      plays.push({
+        playedAt: parsedTime,
+        artistRaw: artistTitle.artistRaw,
+        titleRaw: artistTitle.titleRaw,
+        sourceUrl
+      });
+    }
+
+    if (!plays.length) {
+      return parseFromBodyText($, this.timezone, sourceUrl);
+    }
+
+    return plays;
+  }
+}

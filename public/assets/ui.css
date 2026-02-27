@@ -1,0 +1,120 @@
+:root {
+  font-size: 17px;
+}
+
+body {
+  min-height: 100vh;
+}
+
+.card {
+  border-radius: 0.9rem;
+}
+
+.metric-box {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.7rem;
+  padding: 0.7rem 0.8rem;
+  background: var(--bs-body-bg);
+}
+
+.metric-box div {
+  color: var(--bs-secondary-color);
+  font-size: 0.92rem;
+}
+
+.metric-box strong {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 1.3rem;
+  line-height: 1.2;
+}
+
+.stack {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+.table-wrap.mini {
+  max-height: 26rem;
+}
+
+#tracksTable tbody tr {
+  cursor: pointer;
+}
+
+#tracksTable td {
+  vertical-align: top;
+}
+
+.list {
+  margin: 0;
+  padding-left: 1rem;
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.list li {
+  margin-bottom: 0.4rem;
+}
+
+.link-btn {
+  all: unset;
+  cursor: pointer;
+  color: var(--bs-body-color);
+  line-height: 1.35;
+}
+
+.link-btn:hover {
+  color: var(--bs-primary);
+  text-decoration: underline;
+}
+
+.link-btn small {
+  color: var(--bs-secondary-color);
+}
+
+.chart {
+  min-height: 18rem;
+  border: 1px dashed var(--bs-border-color);
+  border-radius: 0.6rem;
+  padding: 0.25rem;
+}
+
+#seriesChart {
+  min-height: 18rem;
+}
+
+#stationsChart {
+  min-height: 24rem;
+}
+
+.chart svg text {
+  fill: var(--bs-body-color);
+}
+
+.report-box {
+  max-height: 26rem;
+  overflow: auto;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.6rem;
+  padding: 0.7rem;
+  background: var(--bs-body-bg);
+}
+
+.hidden {
+  display: none !important;
+}
+
+@media (max-width: 992px) {
+  :root {
+    font-size: 16px;
+  }
+
+  #stationsChart {
+    min-height: 20rem;
+  }
+}
