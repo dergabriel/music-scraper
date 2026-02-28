@@ -2,16 +2,35 @@ import crypto from 'node:crypto';
 
 const FEAT_PATTERN = /\s*(?:\(|\[)?\b(?:feat\.?|ft\.?|featuring)\b[^\)\]]*(?:\)|\])?\s*/gi;
 const BRACKET_SUFFIX_PATTERN = /\s*[\[(](?:radio\s*edit|extended\s*mix|remix|mix|version|remaster(?:ed)?)\b[^\])]*[\])]/gi;
+const PROMO_MARKER_PATTERN = /(?:\*+\s*neu\s*\*+|\[\s*neu\s*\]|\(\s*neu\s*\))/gi;
+const PROMO_PREFIX_PATTERN = /^\s*neu\s*[-|:]\s*/i;
+const PROMO_SUFFIX_PATTERN = /\s*[-|:]\s*neu\s*$/i;
 const NOISE_PATTERN =
-  /(https?:\/\/|www\.|freestar|window\.|function\(|oauth|xmlhttprequest|onlineradiobox|cookie|benutzer vereinbarung|privatsphäre|serververbindung|installieren sie|android|ios|contentgraph|coverimageurl|streams?\s*[:=])/i;
+  /(https?:\/\/|www\.|freestar|window\.|function\(|oauth|xmlhttprequest|onlineradiobox|cookie|benutzer vereinbarung|privatsphäre|serververbindung|installieren sie|\bandroid\b|\bios\b|contentgraph|coverimageurl|streams?\s*[:=])/i;
 const JINGLE_PATTERN =
   /\b(jingle|station voice|show opener|morningshow|morning show|good morning show|verkehr|wetter|news|nachrichten|promo|claim|werbung|commercial|spot|ident|soundlogo|im werbeblock|werbeblock)\b/i;
 const STATION_PROMO_PATTERN =
   /\b(deutschlands?\s+bigg?ste|radio|sender|station|berlin|baden[-\s]?württemberg|nrw|hamburg|sachsen|bayern|beats|hits)\b/i;
 const UNKNOWN_TRACK_PATTERN = /^(unknown|unbekannt|n\/a|na)$/i;
+const GENERIC_STATION_TOKENS = new Set([
+  'radio',
+  'sender',
+  'station',
+  'livestream',
+  'stream',
+  'hitradio',
+  'live'
+]);
 
 function clean(input) {
   return (input ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+function normalizeTerm(input) {
+  return clean(input)
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function stripFeat(input) {
@@ -22,25 +41,74 @@ function stripBracketSuffix(input) {
   return input.replace(BRACKET_SUFFIX_PATTERN, ' ');
 }
 
+function stripPromoMarkers(input) {
+  return String(input ?? '')
+    .replace(PROMO_MARKER_PATTERN, ' ')
+    .replace(PROMO_PREFIX_PATTERN, ' ')
+    .replace(PROMO_SUFFIX_PATTERN, ' ');
+}
+
+function stripOuterQuotes(input) {
+  return String(input ?? '')
+    .replace(/^\s*["'“”„`]+\s*/g, '')
+    .replace(/\s*["'“”„`]+\s*$/g, '');
+}
+
+function stripTracklistPrefix(input) {
+  return String(input ?? '')
+    .replace(/^\s*(?:#\s*)?\d{1,3}\s*[\.\)\-:]\s*/i, '')
+    .replace(/^\s*track\s*\d{1,3}\s*[\.\)\-:]\s*/i, '');
+}
+
+function stripDuplicatedArtistPrefix(title, artist) {
+  const cleanTitle = clean(title);
+  const cleanArtist = clean(artist);
+  if (!cleanTitle || !cleanArtist) return title;
+
+  const artistWords = cleanArtist
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!artistWords.length) return cleanTitle;
+
+  const artistLoose = artistWords.map((w) => escapeRegExp(w)).join('[\\s\\-_.]*');
+  const re = new RegExp(`^${artistLoose}\\s*[-–—:]\\s*`, 'iu');
+  return cleanTitle.replace(re, ' ');
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function stationTerms(stationName, stationId) {
   const terms = new Set();
-  if (stationName) terms.add(clean(stationName));
+  const add = (raw) => {
+    const term = normalizeTerm(raw);
+    if (!term) return;
+    if (term.length >= 3) terms.add(term);
+    const tokens = term.split(' ');
+    for (const token of tokens) {
+      if (token.length < 4) continue;
+      if (GENERIC_STATION_TOKENS.has(token)) continue;
+      terms.add(token);
+    }
+  };
+
+  add(stationName);
   if (stationId) {
-    terms.add(clean(stationId));
-    terms.add(clean(String(stationId).replaceAll('_', ' ')));
+    add(stationId);
+    add(String(stationId).replaceAll('_', ' '));
   }
-  return Array.from(terms).filter((x) => x.length >= 3);
+
+  return Array.from(terms);
 }
 
 function containsAnyStationTerm(input, stationName, stationId) {
-  const value = clean(input);
+  const value = normalizeTerm(input);
   if (!value) return false;
   for (const term of stationTerms(stationName, stationId)) {
-    const re = new RegExp(`\\b${escapeRegExp(term)}\\b`, 'i');
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(term)}([^\\p{L}\\p{N}]|$)`, 'iu');
     if (re.test(value)) return true;
   }
   return false;
@@ -78,6 +146,7 @@ export function isLikelyNoiseTrack(artistRaw, titleRaw, { stationName = '', stat
   const stationTitle = containsAnyStationTerm(title, stationName, stationId);
   if ((stationArtist || stationTitle) && STATION_PROMO_PATTERN.test(combined)) return true;
   if (stationArtist && title.trim().length < 48) return true;
+  if (stationTitle && artist.trim().split(/\s+/).filter(Boolean).length >= 4) return true;
   return false;
 }
 
@@ -90,6 +159,7 @@ export function isLikelyJingleLike(artistRaw, titleRaw, { stationName = '', stat
   if (JINGLE_PATTERN.test(combined)) return true;
   if (containsAnyStationTerm(artist, stationName, stationId)) return true;
   if (containsAnyStationTerm(title, stationName, stationId) && STATION_PROMO_PATTERN.test(title)) return true;
+  if (containsAnyStationTerm(title, stationName, stationId) && artist.split(/\s+/).filter(Boolean).length >= 4) return true;
 
   const showArtist = /\b(show|morning|radio|station)\b/.test(artist);
   const showTitle = /\b(feel good|show|morning|friday|traffic|wetter|news|nachrichten)\b/.test(title);
@@ -99,11 +169,15 @@ export function isLikelyJingleLike(artistRaw, titleRaw, { stationName = '', stat
 }
 
 export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', stationId = '' } = {}) {
-  const artistBase = clean(stripStationTerms(stripBracketSuffix(stripFeat(artistRaw ?? '')), stationName, stationId));
-  const titleBase = clean(stripStationTerms(stripBracketSuffix(stripFeat(titleRaw ?? '')), stationName, stationId));
+  const artistSanitized = stripTracklistPrefix(stripOuterQuotes(artistRaw ?? ''));
+  const titleSanitized = stripTracklistPrefix(stripOuterQuotes(titleRaw ?? ''));
+  const titleWithoutDuplicateArtist = stripDuplicatedArtistPrefix(titleSanitized, artistSanitized);
 
-  const artist = artistBase.replace(/\*neu\*/gi, ' ').replace(/\s+/g, ' ').trim();
-  const title = titleBase.replace(/\*neu\*/gi, ' ').replace(/\s+/g, ' ').trim();
+  const artistBase = clean(stripStationTerms(stripPromoMarkers(stripBracketSuffix(stripFeat(artistSanitized))), stationName, stationId));
+  const titleBase = clean(stripStationTerms(stripPromoMarkers(stripBracketSuffix(stripFeat(titleWithoutDuplicateArtist))), stationName, stationId));
+
+  const artist = artistBase.replace(/\s+/g, ' ').trim();
+  const title = titleBase.replace(/\s+/g, ' ').trim();
 
   const trackKey = crypto
     .createHash('sha1')

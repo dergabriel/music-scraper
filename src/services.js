@@ -308,6 +308,138 @@ export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
   return result;
 }
 
+export function runPromoMarkerMaintenance({ dbPath, dryRun = false, maxPairs = 5000, logger }) {
+  const db = openDb(dbPath);
+  const candidateRows = db.prepare(`
+    select
+      track_key,
+      min(artist) as artist,
+      min(title) as title,
+      count(*) as plays
+    from plays
+    where instr(lower(artist), '*neu*') > 0
+      or instr(lower(title), '*neu*') > 0
+      or instr(lower(artist), '[neu]') > 0
+      or instr(lower(title), '[neu]') > 0
+      or instr(lower(artist), '(neu)') > 0
+      or instr(lower(title), '(neu)') > 0
+      or lower(artist) like 'neu - %'
+      or lower(title) like 'neu - %'
+    group by track_key
+  `).all();
+
+  const metadataRows = db.prepare('select * from track_metadata').all();
+  const metadataByTrackKey = new Map(metadataRows.map((row) => [row.track_key, row]));
+
+  const mappings = [];
+  for (const row of candidateRows) {
+    const normalized = normalizeArtistTitle(row.artist, row.title);
+    if (!normalized.artist || !normalized.title) continue;
+    if (normalized.trackKey === row.track_key) continue;
+    mappings.push({
+      oldKey: row.track_key,
+      newKey: normalized.trackKey,
+      artist: normalized.artist,
+      title: normalized.title,
+      plays: Number(row.plays || 0)
+    });
+  }
+
+  mappings.sort((a, b) => b.plays - a.plays);
+  const selected = mappings.slice(0, Math.max(1, Number(maxPairs) || 5000));
+
+  let merged = 0;
+  let playsUpdated = 0;
+  let metadataUpdated = 0;
+  let dailyRowsRebuilt = 0;
+
+  if (!dryRun && selected.length > 0) {
+    const tx = db.transaction(() => {
+      for (const map of selected) {
+        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
+        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
+
+        const changes = db.prepare(`
+          update plays
+          set track_key = ?, artist = ?, title = ?
+          where track_key = ?
+        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
+        playsUpdated += changes;
+
+        const dailyByStation = db.prepare(`
+          select date_berlin, station_id, sum(plays) as plays
+          from daily_track_stats
+          where track_key in (?, ?)
+          group by date_berlin, station_id
+        `).all(map.newKey, map.oldKey);
+        if (dailyByStation.length) {
+          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertDaily = db.prepare(`
+            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyByStation) {
+            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
+            dailyRowsRebuilt += 1;
+          }
+        }
+
+        const dailyOverall = db.prepare(`
+          select date_berlin, sum(plays) as plays
+          from daily_overall_track_stats
+          where track_key in (?, ?)
+          group by date_berlin
+        `).all(map.newKey, map.oldKey);
+        if (dailyOverall.length) {
+          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertOverall = db.prepare(`
+            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyOverall) {
+            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
+          }
+        }
+
+        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
+
+        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+        if (chosenMeta) {
+          const mergedMeta = {
+            ...chosenMeta,
+            track_key: map.newKey,
+            artist: map.artist,
+            title: map.title
+          };
+          upsertTrackMetadata(db, mergedMeta);
+          metadataByTrackKey.set(map.newKey, mergedMeta);
+          metadataUpdated += 1;
+        }
+        if (loserMeta) {
+          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
+          metadataByTrackKey.delete(map.oldKey);
+        }
+
+        merged += 1;
+      }
+    });
+    tx();
+  }
+
+  db.close();
+  const result = {
+    candidates: mappings.length,
+    selectedPairs: selected.length,
+    merged,
+    playsUpdated,
+    metadataUpdated,
+    dailyRowsRebuilt,
+    dryRun
+  };
+  logger?.info(result, 'promo marker maintenance completed');
+  return result;
+}
+
 function releaseAgeYears(releaseDate, endDate) {
   const diff = endDate.diff(releaseDate, 'years').years;
   return Number.isFinite(diff) ? Math.max(0, diff) : null;

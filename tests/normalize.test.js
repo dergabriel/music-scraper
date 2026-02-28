@@ -26,6 +26,23 @@ describe('normalizeArtistTitle', () => {
     expect(a.trackKey).toBe(b.trackKey);
   });
 
+  it('removes *neu* style promo markers but keeps real title words', () => {
+    const a = normalizeArtistTitle('Artist', '*NEU* Song');
+    const b = normalizeArtistTitle('Artist', '[neu] Song');
+    const c = normalizeArtistTitle('Artist', '(neu) Song');
+    const d = normalizeArtistTitle('Artist', 'Alles neu');
+    expect(a.title).toBe('song');
+    expect(b.title).toBe('song');
+    expect(c.title).toBe('song');
+    expect(d.title).toBe('alles neu');
+  });
+
+  it('cleans tracklist numbering, quotes and duplicated artist in title', () => {
+    const out = normalizeArtistTitle('Wu-Tang Clan', '"08. Wu Tang Clan - C.R.E.A.M."');
+    expect(out.artist).toBe('wu-tang clan');
+    expect(out.title).toBe('c.r.e.a.m.');
+  });
+
   it('removes station name from parsed artist/title', () => {
     const out = normalizeArtistTitle('bigfm', 'bigfm berlin', { stationName: 'bigFM', stationId: 'bigfm' });
     expect(out.artist).toBe('');
@@ -39,6 +56,10 @@ describe('normalizeArtistTitle', () => {
         'window.trackServer="https://scraper2.onlineradiobox.com/"; freestar.config.enabled_slots.push'
       )
     ).toBe(true);
+  });
+
+  it('does not treat artist names containing "ios" as web noise', () => {
+    expect(isLikelyNoiseTrack('Felix Jaehn & Sarah Barrios', "NOW'S A GOOD TIME TO BE")).toBe(false);
   });
 
   it('marks show/jingle-like items as suspicious', () => {
@@ -62,6 +83,27 @@ describe('normalizeArtistTitle', () => {
       isLikelyJingleLike('bigfm', 'bigfm berlin', {
         stationName: 'bigFM',
         stationId: 'bigfm'
+      })
+    ).toBe(true);
+  });
+
+  it('detects station terms with punctuation/hyphen variants', () => {
+    expect(
+      isLikelyJingleLike('Fritz', 'immer wenn ich dis play, erscheint es auf meinem display', {
+        stationName: 'Fritz (RBB)',
+        stationId: 'fritz_rbb'
+      })
+    ).toBe(true);
+    expect(
+      isLikelyNoiseTrack('N-JOY', 'N-JOY vom NDR', {
+        stationName: 'N-JOY',
+        stationId: 'njoy'
+      })
+    ).toBe(true);
+    expect(
+      isLikelyNoiseTrack('immer wenn ich dis play, erscheint es auf meinem display', 'fritz', {
+        stationName: 'Fritz (RBB)',
+        stationId: 'fritz_rbb'
       })
     ).toBe(true);
   });

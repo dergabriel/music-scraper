@@ -18,7 +18,7 @@ import {
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackTotals } from './trends.js';
-import { runDailyEvaluation, runIngest, nextBerlinTime, runBackpoolAnalysis, runTrackOrientationMaintenance, runNoisePlayCleanup } from './services.js';
+import { runDailyEvaluation, runIngest, nextBerlinTime, runBackpoolAnalysis, runTrackOrientationMaintenance, runNoisePlayCleanup, runPromoMarkerMaintenance } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
 import { TrackVerifier } from './trackVerifier.js';
@@ -619,6 +619,7 @@ export async function startApiServer({ configPath, dbPath, port = 8787, schedule
         try {
           await runIngest({ configPath, dbPath, logger });
           runNoisePlayCleanup({ dbPath, logger });
+          runPromoMarkerMaintenance({ dbPath, logger });
           runTrackOrientationMaintenance({ dbPath, logger });
           const date = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
           runDailyEvaluation({ configPath, dbPath, date, logger });

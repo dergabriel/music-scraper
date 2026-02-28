@@ -28,30 +28,6 @@ stations:
     fetcher: "http"
     timezone: "Europe/Berlin"
 
-  - id: "kissfm"
-    name: "KISS FM"
-    playlist_url: "https://radio-horen.de/playlists/kiss-fm-berlin"
-    fallback_urls:
-      - "https://onlineradiobox.com/de/kissfmberlin/playlist/"
-      - "https://onlineradiobox.com/de/kissfreshbeats/playlist/"
-      - "https://radiospinner.com/de/kiss-fm-popular-30456/tracklist/"
-    parser: "generic_html_or_onlineradiobox"
-    fetcher: "http"
-    timezone: "Europe/Berlin"
-    min_daily_hours: 18
-    min_daily_plays: 60
-
-  - id: "fluxfm"
-    name: "FluxFM"
-    playlist_url: "https://onlineradiobox.com/de/fluxfm/playlist/"
-    fallback_urls:
-      - "https://onlineradiobox.com/de/fluxfmberlin/playlist/"
-    parser: "onlineradiobox"
-    fetcher: "http"
-    timezone: "Europe/Berlin"
-    min_daily_hours: 18
-    min_daily_plays: 60
-
   - id: "ffh"
     name: "FFH"
     playlist_url: "https://onlineradiobox.com/de/hitradioffh/playlist/"
@@ -105,25 +81,71 @@ stations:
     fetcher: "http"
     timezone: "Europe/Berlin"
 
+  - id: "njoy"
+    name: "N-JOY"
+    playlist_url: "https://onlineradiobox.com/de/njoyradio/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/njoy/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "fritz_rbb"
+    name: "Fritz (RBB)"
+    playlist_url: "https://onlineradiobox.com/de/radiofritz/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/fritz/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "oe3"
+    name: "OE3"
+    playlist_url: "https://onlineradiobox.com/at/hitradiooe3/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/at/oe3/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "kronehit"
+    name: "kronehit"
+    playlist_url: "https://onlineradiobox.com/at/kronehit/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "radio_hamburg"
+    name: "Radio Hamburg"
+    playlist_url: "https://onlineradiobox.com/de/radiohamburg/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "rtl_104_6"
+    name: "104.6 RTL"
+    playlist_url: "https://onlineradiobox.com/de/1046rtl/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/1046rtl/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "bayern_3"
+    name: "Bayern 3"
+    playlist_url: "https://onlineradiobox.com/de/bayern3/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/bayern3/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
   - id: "rtl_89_0"
     name: "89.0 RTL"
     playlist_url: "https://onlineradiobox.com/de/890rtl/playlist/"
     parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
-
-  - id: "absolut_hot"
-    name: "Absolut HOT"
-    playlist_url: "https://radio-horen.de/playlists/absolut-hot"
-    fallback_urls:
-      - "https://radiospinner.com/de/absolut-hot-32718/tracklist/"
-      - "https://onlineradiobox.com/de/absoluthot/playlist/"
-      - "https://onlineradiobox.com/de/absolut/playlist/"
-    parser: "generic_html_or_onlineradiobox"
-    fetcher: "http"
-    timezone: "Europe/Berlin"
-    min_daily_hours: 18
-    min_daily_plays: 60
 
   - id: "delta_radio"
     name: "delta radio"

@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { openDb, upsertStation, insertPlayIgnore, upsertTrackMetadata } from '../src/db.js';
 import { normalizeArtistTitle } from '../src/normalize.js';
-import { runTrackOrientationMaintenance, runNoisePlayCleanup } from '../src/services.js';
+import { runTrackOrientationMaintenance, runNoisePlayCleanup, runPromoMarkerMaintenance } from '../src/services.js';
 
 function addPlay(db, { stationId, playedAtUtcIso, artistRaw, titleRaw }) {
   const normalized = normalizeArtistTitle(artistRaw, titleRaw);
@@ -169,6 +170,64 @@ describe('database maintenance', () => {
     const remaining = check.prepare('select count(*) as c from plays').get()?.c ?? 0;
     check.close();
     expect(remaining).toBe(1);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merges promo-marker variants like *neu* into canonical track key', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-promo-'));
+    const dbPath = path.join(tmp, 'promo.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'planet_radio',
+      name: 'Planet Radio',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonicalKey = addPlay(db, {
+      stationId: 'planet_radio',
+      playedAtUtcIso: '2026-02-27T08:00:00.000Z',
+      artistRaw: 'Robin Schulz',
+      titleRaw: 'Embers'
+    });
+    const legacyPromoKey = crypto
+      .createHash('sha1')
+      .update('robin schulz||*neu* embers', 'utf8')
+      .digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'planet_radio',
+      '2026-02-27T09:00:00.000Z',
+      'Robin Schulz',
+      '*NEU* Embers',
+      'robin schulz',
+      '*neu* embers',
+      legacyPromoKey,
+      'https://example.test',
+      '2026-02-28T10:00:00.000Z'
+    );
+    db.close();
+
+    const dry = runPromoMarkerMaintenance({ dbPath, dryRun: true });
+    expect(dry.candidates).toBe(1);
+
+    const live = runPromoMarkerMaintenance({ dbPath, dryRun: false });
+    expect(live.merged).toBe(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+      from plays
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonicalKey);
+    expect(rows[0].title).toBe('embers');
+    expect(rows[0].plays).toBe(2);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

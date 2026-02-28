@@ -65,4 +65,23 @@ describe('parsers', () => {
     expect(plays[0].titleRaw).toBe('Sports car');
     expect(plays[2].artistRaw).toBe('The Weeknd, Daft Punk');
   });
+
+  it('parses onlineradiobox rows in "Artist: Title" format and skips promo rows', () => {
+    const parser = new OnlineradioboxParser({ timezone: 'Europe/Berlin' });
+    const plays = parser.parse(fixture('onlineradiobox_colon_schedule.html'), 'https://example.test');
+    expect(plays.length).toBe(3);
+    expect(plays[0].artistRaw).toBe('Alex Warren');
+    expect(plays[0].titleRaw).toBe('Fever Dream');
+    expect(plays[2].artistRaw).toBe('Nico Santos');
+  });
+
+  it('parses onlineradiobox rows in "Title - Artist" format (N-JOY style)', () => {
+    const parser = new OnlineradioboxParser({ timezone: 'Europe/Berlin' });
+    const plays = parser.parse(fixture('onlineradiobox_title_artist_schedule.html'), 'https://example.test');
+    expect(plays.length).toBe(3);
+    expect(plays[0].artistRaw).toBe('Nico Santos');
+    expect(plays[0].titleRaw).toBe('All Time High');
+    expect(plays[2].artistRaw).toBe('Eminem feat. Rihanna');
+    expect(plays[2].titleRaw).toBe('The Monster');
+  });
 });

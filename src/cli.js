@@ -11,7 +11,8 @@ import {
   runCoverageAudit,
   runBackpoolAnalysis,
   runTrackOrientationMaintenance,
-  runNoisePlayCleanup
+  runNoisePlayCleanup,
+  runPromoMarkerMaintenance
 } from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
 
@@ -168,6 +169,12 @@ program
         dryRun: Boolean(opts.dryRun),
         logger
       });
+      runPromoMarkerMaintenance({
+        dbPath: opts.db,
+        dryRun: Boolean(opts.dryRun),
+        maxPairs: Number(opts.maxPairs),
+        logger
+      });
       const result = runTrackOrientationMaintenance({
         dbPath: opts.db,
         dryRun: Boolean(opts.dryRun),
@@ -193,6 +200,7 @@ program
     runIngest({ configPath: opts.config, dbPath: opts.db, logger })
       .then(async () => {
         runNoisePlayCleanup({ dbPath: opts.db, logger });
+        runPromoMarkerMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
@@ -261,6 +269,7 @@ program
         logger.info('running startup ingest/evaluation/report before API boot');
         await runIngest({ configPath: opts.config, dbPath: opts.db, logger });
         runNoisePlayCleanup({ dbPath: opts.db, logger });
+        runPromoMarkerMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
