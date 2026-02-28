@@ -3,7 +3,9 @@ import { BaseParser } from './base.js';
 import { parsePlayedAt } from '../time.js';
 
 const INVALID_TRACK_FRAGMENT =
-  /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie)/i;
+  /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie|freestar|placementname|slotid|benutzer vereinbarung|privatsphäre|serververbindung verloren|onlineradio deutschland|installieren sie gratis)/i;
+const MAX_ARTIST_LEN = 90;
+const MAX_TITLE_LEN = 160;
 
 function cleanContent(text) {
   return String(text ?? '')
@@ -24,7 +26,7 @@ function splitArtistTitle(line) {
   if (byPattern) {
     const titleRaw = byPattern[1].trim();
     const artistRaw = byPattern[2].trim();
-    if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) {
+    if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`) && artistRaw.length <= MAX_ARTIST_LEN && titleRaw.length <= MAX_TITLE_LEN) {
       return { artistRaw, titleRaw };
     }
   }
@@ -34,7 +36,7 @@ function splitArtistTitle(line) {
     if (cleaned.includes(sep)) {
       const [artistRaw, ...rest] = cleaned.split(sep);
       const titleRaw = rest.join(sep).trim();
-      if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) {
+      if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`) && artistRaw.length <= MAX_ARTIST_LEN && titleRaw.length <= MAX_TITLE_LEN) {
         return { artistRaw: artistRaw.trim(), titleRaw };
       }
     }
@@ -130,14 +132,26 @@ export class GenericHtmlParser extends BaseParser {
 
       let artistTitle = null;
       if (explicitArtist && explicitTitle) {
-        artistTitle = { artistRaw: explicitArtist, titleRaw: explicitTitle };
+        if (
+          explicitArtist.length <= MAX_ARTIST_LEN &&
+          explicitTitle.length <= MAX_TITLE_LEN &&
+          !INVALID_TRACK_FRAGMENT.test(`${explicitArtist} ${explicitTitle}`)
+        ) {
+          artistTitle = { artistRaw: explicitArtist, titleRaw: explicitTitle };
+        }
       } else if (tableCells.length >= 3) {
         // Common "Zeit | Artist | Titel" playlist tables.
         artistTitle = {
           artistRaw: cleanContent(tableCells[1]),
           titleRaw: cleanContent(tableCells.slice(2).join(' - '))
         };
-        if (!artistTitle.artistRaw || !artistTitle.titleRaw || INVALID_TRACK_FRAGMENT.test(`${artistTitle.artistRaw} ${artistTitle.titleRaw}`)) {
+        if (
+          !artistTitle.artistRaw ||
+          !artistTitle.titleRaw ||
+          artistTitle.artistRaw.length > MAX_ARTIST_LEN ||
+          artistTitle.titleRaw.length > MAX_TITLE_LEN ||
+          INVALID_TRACK_FRAGMENT.test(`${artistTitle.artistRaw} ${artistTitle.titleRaw}`)
+        ) {
           artistTitle = null;
         }
       } else {

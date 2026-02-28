@@ -279,6 +279,35 @@ export function runTrackOrientationMaintenance({
   return result;
 }
 
+export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
+  const db = openDb(dbPath);
+  const whereClause = `
+    length(title_raw) > 220
+    or length(artist_raw) > 140
+    or length(title) > 180
+    or length(artist) > 120
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%freestar%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%xmlhttprequest%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%window.trackserver%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%benutzer vereinbarung%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%cookie-verwaltung%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%serververbindung verloren%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%installieren sie gratis%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%onlineradio deutschland%'
+  `;
+
+  const found = db.prepare(`select count(*) as c from plays where ${whereClause}`).get()?.c ?? 0;
+  let removed = 0;
+  if (!dryRun && found > 0) {
+    removed = db.prepare(`delete from plays where ${whereClause}`).run().changes;
+  }
+  db.close();
+
+  const result = { found, removed, dryRun };
+  logger?.info(result, 'noise play cleanup completed');
+  return result;
+}
+
 function releaseAgeYears(releaseDate, endDate) {
   const diff = endDate.diff(releaseDate, 'years').years;
   return Number.isFinite(diff) ? Math.max(0, diff) : null;

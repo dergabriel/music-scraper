@@ -10,7 +10,8 @@ import {
   runStationReport,
   runCoverageAudit,
   runBackpoolAnalysis,
-  runTrackOrientationMaintenance
+  runTrackOrientationMaintenance,
+  runNoisePlayCleanup
 } from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
 
@@ -162,6 +163,11 @@ program
   .option('--min-play-ratio <number>', 'Minimum play-count ratio fallback for close scores', '1.2')
   .action((opts) => {
     try {
+      runNoisePlayCleanup({
+        dbPath: opts.db,
+        dryRun: Boolean(opts.dryRun),
+        logger
+      });
       const result = runTrackOrientationMaintenance({
         dbPath: opts.db,
         dryRun: Boolean(opts.dryRun),
@@ -186,6 +192,7 @@ program
   .action(async (opts) => {
     runIngest({ configPath: opts.config, dbPath: opts.db, logger })
       .then(async () => {
+        runNoisePlayCleanup({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
@@ -253,6 +260,7 @@ program
       if (opts.startupReport) {
         logger.info('running startup ingest/evaluation/report before API boot');
         await runIngest({ configPath: opts.config, dbPath: opts.db, logger });
+        runNoisePlayCleanup({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({

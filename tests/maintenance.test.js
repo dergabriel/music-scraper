@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDb, upsertStation, insertPlayIgnore, upsertTrackMetadata } from '../src/db.js';
 import { normalizeArtistTitle } from '../src/normalize.js';
-import { runTrackOrientationMaintenance } from '../src/services.js';
+import { runTrackOrientationMaintenance, runNoisePlayCleanup } from '../src/services.js';
 
 function addPlay(db, { stationId, playedAtUtcIso, artistRaw, titleRaw }) {
   const normalized = normalizeArtistTitle(artistRaw, titleRaw);
@@ -130,6 +130,45 @@ describe('database maintenance', () => {
     const loserMeta = check.prepare('select track_key from track_metadata where track_key = ?').get(swappedKey);
     expect(loserMeta).toBeUndefined();
     check.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('removes garbage playlist rows with embedded website/script text', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-cleanup-'));
+    const dbPath = path.join(tmp, 'cleanup.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'planet_radio',
+      name: 'Planet Radio',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    addPlay(db, {
+      stationId: 'planet_radio',
+      playedAtUtcIso: '2026-02-27T08:00:00.000Z',
+      artistRaw: 'Tate McRae',
+      titleRaw: 'Just Keep Watching'
+    });
+    addPlay(db, {
+      stationId: 'planet_radio',
+      playedAtUtcIso: '2026-02-27T09:00:00.000Z',
+      artistRaw: 'Tate McRae',
+      titleRaw: 'Just Keep Watching freestar.config.enabled_slots.push({ placementName: "x", slotId: "x" });'
+    });
+    db.close();
+
+    const dry = runNoisePlayCleanup({ dbPath, dryRun: true });
+    expect(dry.found).toBe(1);
+    expect(dry.removed).toBe(0);
+
+    const live = runNoisePlayCleanup({ dbPath, dryRun: false });
+    expect(live.removed).toBe(1);
+
+    const check = openDb(dbPath);
+    const remaining = check.prepare('select count(*) as c from plays').get()?.c ?? 0;
+    check.close();
+    expect(remaining).toBe(1);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

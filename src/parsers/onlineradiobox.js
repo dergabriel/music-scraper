@@ -3,7 +3,18 @@ import { BaseParser } from './base.js';
 import { parsePlayedAt } from '../time.js';
 
 const INVALID_TRACK_FRAGMENT =
-  /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie)/i;
+  /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie|freestar|placementname|slotid|benutzer vereinbarung|privatsphäre|serververbindung verloren|onlineradio deutschland|installieren sie gratis)/i;
+const MAX_ARTIST_LEN = 90;
+const MAX_TITLE_LEN = 160;
+
+function validateParts(artistRaw, titleRaw) {
+  const artist = cleanContent(artistRaw);
+  const title = cleanContent(titleRaw);
+  if (!artist || !title) return null;
+  if (artist.length > MAX_ARTIST_LEN || title.length > MAX_TITLE_LEN) return null;
+  if (INVALID_TRACK_FRAGMENT.test(`${artist} ${title}`)) return null;
+  return { artistRaw: artist, titleRaw: title };
+}
 
 function cleanContent(text) {
   return String(text ?? '')
@@ -24,9 +35,7 @@ function split(text) {
   if (byPattern) {
     const titleRaw = byPattern[1].trim();
     const artistRaw = byPattern[2].trim();
-    if (artistRaw && titleRaw && !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) {
-      return { artistRaw, titleRaw };
-    }
+    return validateParts(artistRaw, titleRaw);
   }
 
   const separators = [' - ', ' – ', ' — '];
@@ -34,13 +43,7 @@ function split(text) {
     if (cleaned.includes(sep)) {
       const [artistRaw, ...rest] = cleaned.split(sep);
       const titleRaw = rest.join(sep).trim();
-      if (
-        artistRaw &&
-        titleRaw &&
-        !INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)
-      ) {
-        return { artistRaw: artistRaw.trim(), titleRaw };
-      }
+      return validateParts(artistRaw, titleRaw);
     }
   }
   return null;
@@ -133,7 +136,7 @@ export class OnlineradioboxParser extends BaseParser {
 
       let item;
       if (artistRaw && titleRaw) {
-        item = { artistRaw, titleRaw };
+        item = validateParts(artistRaw, titleRaw);
       } else {
         const text = el.text().replace(/\s+/g, ' ').trim();
         item = split(cleanContent(text.replace(timeRaw, '')));
