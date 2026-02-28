@@ -15,6 +15,7 @@ import {
   upsertBackpoolStationSummary,
   clearBackpoolTrackCatalogForStation,
   upsertBackpoolTrackCatalogRow,
+  upsertTrackMetadata,
   clearDailyStatsForDate,
   upsertDailyStationStat,
   upsertDailyTrackStat,
@@ -76,6 +77,206 @@ function parseIsoDate(value, label) {
     throw new Error(`Invalid ${label} date: ${value}`);
   }
   return dt;
+}
+
+function textLooksLikeArtist(value) {
+  const text = String(value || '').toLowerCase();
+  if (!text) return false;
+  return /(?:\s(?:x|vs)\s|&|,| feat\.?| ft\.?| dj\s|mc\s)/i.test(text);
+}
+
+function textLooksLikeSongTitle(value) {
+  const text = String(value || '').toLowerCase();
+  if (!text) return false;
+  return /[!?]|(?:\b(love|heart|night|day|dream|dance|baby|sorry|home|body|fire|song)\b)/i.test(text);
+}
+
+function metadataQuality(row) {
+  if (!row) return -1;
+  let score = 0;
+  if (row.verified_exists === 1) score += 5;
+  if (row.verified_exists === 0) score -= 2;
+  const conf = Number(row.verification_confidence);
+  if (Number.isFinite(conf)) score += conf * 3;
+  if (row.release_date_utc) score += 1;
+  if (row.genre) score += 0.3;
+  if (row.chart_single_rank) score += 0.4;
+  return score;
+}
+
+function orientationQuality(row, metadataRow) {
+  let score = Math.log1p(Number(row.plays || 0));
+  score += metadataQuality(metadataRow);
+
+  if (textLooksLikeArtist(row.artist)) score += 0.7;
+  if (textLooksLikeArtist(row.title)) score -= 0.7;
+  if (textLooksLikeSongTitle(row.title)) score += 0.4;
+  if (textLooksLikeSongTitle(row.artist)) score -= 0.4;
+
+  const artistWords = String(row.artist || '').trim().split(/\s+/).filter(Boolean).length;
+  if (artistWords > 7) score -= 0.3;
+  return score;
+}
+
+function preferredMetadataRow(a, b) {
+  if (!a && !b) return null;
+  if (a && !b) return a;
+  if (!a && b) return b;
+  return metadataQuality(a) >= metadataQuality(b) ? a : b;
+}
+
+export function runTrackOrientationMaintenance({
+  dbPath,
+  dryRun = false,
+  minScoreGap = 0.35,
+  minPlayRatio = 1.2,
+  maxPairs = 5000,
+  logger
+}) {
+  const db = openDb(dbPath);
+  const trackRows = db.prepare(`
+    select
+      track_key,
+      min(artist) as artist,
+      min(title) as title,
+      count(*) as plays
+    from plays
+    group by track_key
+  `).all();
+  const metadataRows = db.prepare('select * from track_metadata').all();
+  const metadataByTrackKey = new Map(metadataRows.map((row) => [row.track_key, row]));
+
+  const byOrientation = new Map();
+  for (const row of trackRows) {
+    byOrientation.set(`${row.artist}||${row.title}`, row);
+  }
+
+  const candidates = [];
+  for (const row of trackRows) {
+    const reverse = byOrientation.get(`${row.title}||${row.artist}`);
+    if (!reverse) continue;
+    if (String(row.track_key) >= String(reverse.track_key)) continue;
+
+    const metaA = metadataByTrackKey.get(row.track_key) ?? null;
+    const metaB = metadataByTrackKey.get(reverse.track_key) ?? null;
+    const scoreA = orientationQuality(row, metaA);
+    const scoreB = orientationQuality(reverse, metaB);
+    const gap = Math.abs(scoreA - scoreB);
+    const maxPlays = Math.max(Number(row.plays || 0), Number(reverse.plays || 0));
+    const minPlays = Math.max(1, Math.min(Number(row.plays || 0), Number(reverse.plays || 0)));
+    const playRatio = maxPlays / minPlays;
+    if (gap < minScoreGap && playRatio < minPlayRatio) {
+      continue;
+    }
+
+    const winner = scoreA >= scoreB ? row : reverse;
+    const loser = winner.track_key === row.track_key ? reverse : row;
+    candidates.push({
+      winnerKey: winner.track_key,
+      loserKey: loser.track_key,
+      winnerArtist: winner.artist,
+      winnerTitle: winner.title,
+      scoreGap: gap,
+      playRatio,
+      winnerPlays: Number(winner.plays || 0),
+      loserPlays: Number(loser.plays || 0)
+    });
+  }
+
+  candidates.sort((a, b) => (b.winnerPlays + b.loserPlays) - (a.winnerPlays + a.loserPlays));
+  const selected = candidates.slice(0, Math.max(1, Number(maxPairs) || 5000));
+
+  let merged = 0;
+  let playsUpdated = 0;
+  let metadataUpdated = 0;
+  let dailyRowsRebuilt = 0;
+
+  if (!dryRun && selected.length > 0) {
+    const tx = db.transaction(() => {
+      for (const pair of selected) {
+        const winnerMeta = metadataByTrackKey.get(pair.winnerKey) ?? null;
+        const loserMeta = metadataByTrackKey.get(pair.loserKey) ?? null;
+
+        const playChanges = db.prepare(`
+          update plays
+          set track_key = ?, artist = ?, title = ?
+          where track_key = ?
+        `).run(pair.winnerKey, pair.winnerArtist, pair.winnerTitle, pair.loserKey).changes;
+        playsUpdated += playChanges;
+
+        const dailyByStation = db.prepare(`
+          select date_berlin, station_id, sum(plays) as plays
+          from daily_track_stats
+          where track_key in (?, ?)
+          group by date_berlin, station_id
+        `).all(pair.winnerKey, pair.loserKey);
+        if (dailyByStation.length) {
+          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(pair.winnerKey, pair.loserKey);
+          const insertDaily = db.prepare(`
+            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyByStation) {
+            insertDaily.run(row.date_berlin, row.station_id, pair.winnerKey, pair.winnerArtist, pair.winnerTitle, Number(row.plays || 0));
+            dailyRowsRebuilt += 1;
+          }
+        }
+
+        const dailyOverall = db.prepare(`
+          select date_berlin, sum(plays) as plays
+          from daily_overall_track_stats
+          where track_key in (?, ?)
+          group by date_berlin
+        `).all(pair.winnerKey, pair.loserKey);
+        if (dailyOverall.length) {
+          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(pair.winnerKey, pair.loserKey);
+          const insertOverall = db.prepare(`
+            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyOverall) {
+            insertOverall.run(row.date_berlin, pair.winnerKey, pair.winnerArtist, pair.winnerTitle, Number(row.plays || 0));
+          }
+        }
+
+        db.prepare('delete from backpool_track_catalog where track_key = ?').run(pair.loserKey);
+
+        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+        if (chosenMeta) {
+          const mergedMeta = {
+            ...chosenMeta,
+            track_key: pair.winnerKey,
+            artist: pair.winnerArtist,
+            title: pair.winnerTitle
+          };
+          upsertTrackMetadata(db, mergedMeta);
+          metadataByTrackKey.set(pair.winnerKey, mergedMeta);
+          metadataUpdated += 1;
+        }
+        if (loserMeta) {
+          db.prepare('delete from track_metadata where track_key = ?').run(pair.loserKey);
+          metadataByTrackKey.delete(pair.loserKey);
+        }
+
+        merged += 1;
+      }
+    });
+    tx();
+  }
+
+  db.close();
+  const result = {
+    scannedTracks: trackRows.length,
+    candidatePairs: candidates.length,
+    selectedPairs: selected.length,
+    merged,
+    playsUpdated,
+    metadataUpdated,
+    dailyRowsRebuilt,
+    dryRun
+  };
+  logger?.info(result, 'track orientation maintenance completed');
+  return result;
 }
 
 function releaseAgeYears(releaseDate, endDate) {
@@ -458,6 +659,7 @@ export async function runBackpoolAnalysis({
   lowRotationMaxDailyPlays = 2,
   rotationMinActiveDays = 5,
   rotationMinSpanDays = 28,
+  minTrackAgeDays = 30,
   rotationAdaptive = true,
   persistToDb = true,
   logger
@@ -481,6 +683,7 @@ export async function runBackpoolAnalysis({
   const lowRotationMax = Math.max(0.1, Number(lowRotationMaxDailyPlays) || 2);
   const rotationMinDays = Math.max(1, Math.floor(Number(rotationMinActiveDays) || 5));
   const rotationSpanMin = Math.max(1, Math.floor(Number(rotationMinSpanDays) || 28));
+  const trackAgeMin = Math.max(1, Math.floor(Number(minTrackAgeDays) || 30));
   const adaptiveRotation = rotationAdaptive !== false;
   const rangeDays = Math.max(1, Math.floor(toBerlin.diff(fromBerlin, 'days').days) + 1);
 
@@ -596,6 +799,9 @@ export async function runBackpoolAnalysis({
       : adaptiveRotation
         ? Math.min(rotationSpanMin, Math.max(1, observedSpanDays || observedCoverageDays || 1))
         : rotationSpanMin;
+    const effectiveTrackAgeMin = adaptiveRotation
+      ? Math.max(1, Math.min(trackAgeMin, Math.floor(Math.max(1, rateBasisDays * 0.5))))
+      : trackAgeMin;
     const minActiveFromCadence = Math.max(1, Math.ceil(effectiveRotationSpanMin * rotationMinDaily));
     const effectiveRotationActiveMin = adaptiveRotation
       ? Math.min(rotationMinDays, minActiveFromCadence)
@@ -616,6 +822,10 @@ export async function runBackpoolAnalysis({
           ? Math.max(1, Math.floor(lastPlayed.startOf('day').diff(firstPlayed.startOf('day'), 'days').days) + 1)
           : 0;
       const cadenceDays = plays > 0 ? rateBasisDays / plays : null;
+      const stationAgeDays =
+        firstPlayed && firstPlayed.isValid
+          ? Math.max(1, Math.floor(toBerlin.startOf('day').diff(firstPlayed.startOf('day'), 'days').days) + 1)
+          : 0;
 
       let metadataIssue = null;
       if (!row.release_date_utc) {
@@ -642,6 +852,7 @@ export async function runBackpoolAnalysis({
         plays,
         activeDays,
         playsPerDay,
+        stationAgeDays,
         spanDays,
         cadenceDays
       };
@@ -653,6 +864,7 @@ export async function runBackpoolAnalysis({
         row.plays >= Number(minTrackPlays || 1) &&
         row.playsPerDay >= rotationMinDaily &&
         row.playsPerDay <= lowRotationMax &&
+        row.stationAgeDays >= effectiveTrackAgeMin &&
         row.activeDays >= effectiveRotationActiveMin &&
         row.spanDays >= effectiveRotationSpanMin
       ))
@@ -671,6 +883,9 @@ export async function runBackpoolAnalysis({
         row.activeDays < rotationMinDays ||
         row.spanDays < rotationSpanMin
       ))
+      .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
+    const recentTracks = classifiedRows
+      .filter((row) => row.stationAgeDays > 0 && row.stationAgeDays < effectiveTrackAgeMin)
       .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
 
     const backpoolTracks = withRelease
@@ -719,6 +934,7 @@ export async function runBackpoolAnalysis({
       plays: Number(row.plays || 0),
       playsPerDay: Number(row.playsPerDay || 0),
       activeDays: Number(row.activeDays || 0),
+      stationAgeDays: Number(row.stationAgeDays || 0),
       spanDays: Number(row.spanDays || 0),
       cadenceDays: Number.isFinite(row.cadenceDays) ? row.cadenceDays : null,
       firstPlayedDate: row.firstPlayed?.isValid ? row.firstPlayed.toISODate() : null,
@@ -914,10 +1130,12 @@ export async function runBackpoolAnalysis({
       lowRotationMaxDailyPlays: lowRotationMax,
       rotationMinActiveDays: rotationMinDays,
       rotationMinSpanDays: rotationSpanMin,
+      minTrackAgeDays: trackAgeMin,
       rotationAdaptive: adaptiveRotation,
       rotationWarmupMode: warmupMode,
       rotationEffectiveMinActiveDays: effectiveRotationActiveMin,
       rotationEffectiveMinSpanDays: effectiveRotationSpanMin,
+      rotationEffectiveMinTrackAgeDays: effectiveTrackAgeMin,
       rotationRateBasisDays: rateBasisDays,
       rangeDays,
       observedCoverageDays,
@@ -935,6 +1153,7 @@ export async function runBackpoolAnalysis({
       rotationBackpoolTracks: rotationBackpoolTracks.slice(0, topLimit).map(mapRotationTrack),
       hotRotationTracks: hotRotationTracks.slice(0, topLimit).map(mapRotationTrack),
       sparseRotationTracks: sparseRotationTracks.slice(0, topLimit).map(mapRotationTrack),
+      recentTracks: recentTracks.slice(0, topLimit).map(mapRotationTrack),
       topBackpoolTracks: backpoolTracks.slice(0, topLimit).map(mapTrack),
       lowRotationBackpoolTracks: lowRotationBackpoolTracks.slice(0, topLimit).map(mapTrack),
       oldestTracks: oldestTracks.slice(0, topLimit).map(mapTrack),
@@ -949,6 +1168,7 @@ export async function runBackpoolAnalysis({
       `# JUKA Backpool Analysis ${fromBerlin.toISODate()} bis ${toBerlin.toISODate()}`,
       '',
       `- Primäre Definition (Rotation): Ø Plays/Tag **${rotationMinDaily.toFixed(2)} bis ${lowRotationMax.toFixed(2)}**, aktive Tage **>= ${rotationMinDays}**, Spannweite **>= ${rotationSpanMin} Tage**`,
+      `- Neu-Filter: Titel muessen mind. **${trackAgeMin} Tage** im Senderverlauf vorhanden sein (adaptive Absenkung bei kurzer Historie moeglich).`,
       adaptiveRotation
         ? '- Adaptive Auswertung aktiv: Bei kurzer Historie werden Mindestwerte pro Sender auf die verfügbare Datenbasis skaliert (Warmup-Modus).'
         : '- Adaptive Auswertung deaktiviert: Es gelten die festen Mindestwerte für alle Sender.',
@@ -1014,6 +1234,7 @@ export async function runBackpoolAnalysis({
       lowRotationMaxDailyPlays: lowRotationMax,
       rotationMinActiveDays: rotationMinDays,
       rotationMinSpanDays: rotationSpanMin,
+      minTrackAgeDays: trackAgeMin,
       rotationAdaptive: adaptiveRotation,
       rangeDays,
       stations: rows.length,
@@ -1033,6 +1254,7 @@ export async function runBackpoolAnalysis({
     lowRotationMaxDailyPlays: lowRotationMax,
     rotationMinActiveDays: rotationMinDays,
     rotationMinSpanDays: rotationSpanMin,
+    minTrackAgeDays: trackAgeMin,
     rotationAdaptive: adaptiveRotation,
     rangeDays,
     rows,

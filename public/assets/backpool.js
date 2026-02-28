@@ -8,6 +8,7 @@ const ROTATION_PRESETS = {
     maxDaily: 2,
     minActiveDays: 2,
     minSpanDays: 7,
+    minTrackAgeDays: 14,
     hint: 'Mehr Titel, auch sehr seltene Rotationen.'
   },
   balanced: {
@@ -16,6 +17,7 @@ const ROTATION_PRESETS = {
     maxDaily: 1.6,
     minActiveDays: 3,
     minSpanDays: 10,
+    minTrackAgeDays: 30,
     hint: 'Guter Mittelweg fuer typische Backpool-Titel.'
   },
   strict: {
@@ -24,6 +26,7 @@ const ROTATION_PRESETS = {
     maxDaily: 1.2,
     minActiveDays: 4,
     minSpanDays: 14,
+    minTrackAgeDays: 60,
     hint: 'Nur sehr klare, stabile Backpool-Rotationen.'
   }
 };
@@ -82,6 +85,25 @@ function formatHour(hour) {
   return `${String(hour).padStart(2, '0')}:00`;
 }
 
+function getSearchQuery() {
+  return String(qs('backpoolSearchInput')?.value || '').trim().toLowerCase();
+}
+
+function includesQuery(value, query) {
+  return String(value || '').toLowerCase().includes(query);
+}
+
+function trackMatchesQuery(track, query, stationNameOverride) {
+  if (!query) return true;
+  const stationName = stationNameOverride ?? track.stationName ?? '';
+  return (
+    includesQuery(track.artist, query) ||
+    includesQuery(track.title, query) ||
+    includesQuery(stationName, query) ||
+    includesQuery(track.stationId, query)
+  );
+}
+
 function applyRotationPreset() {
   const presetId = qs('rotationPresetSelect')?.value || 'balanced';
   const preset = ROTATION_PRESETS[presetId] || ROTATION_PRESETS.balanced;
@@ -89,6 +111,7 @@ function applyRotationPreset() {
   qs('lowRotationMaxDailyPlaysInput').value = String(preset.maxDaily);
   qs('rotationMinActiveDaysInput').value = String(preset.minActiveDays);
   qs('rotationMinSpanDaysInput').value = String(preset.minSpanDays);
+  qs('minTrackAgeDaysInput').value = String(preset.minTrackAgeDays);
   if (qs('presetHint')) {
     qs('presetHint').textContent = `${preset.label}: ${preset.hint}`;
   }
@@ -123,13 +146,14 @@ function updateSortButton() {
   btn.textContent = sortByStation ? 'Nach Plays sortieren' : 'Senderweise sortieren';
 }
 
-function renderAllBackpoolTable(rows) {
+function renderAllBackpoolTable(rows, query = '') {
   const allTracks = allBackpoolTracks(rows);
   const tbody = qs('allBackpoolTable')?.querySelector('tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
 
-  const sorted = allTracks.slice().sort((a, b) => {
+  const filtered = allTracks.filter((row) => trackMatchesQuery(row, query));
+  const sorted = filtered.slice().sort((a, b) => {
     if (sortByStation) {
       const stationCmp = String(a.stationName || '').localeCompare(String(b.stationName || ''), 'de', { sensitivity: 'base' });
       if (stationCmp !== 0) return stationCmp;
@@ -142,7 +166,7 @@ function renderAllBackpoolTable(rows) {
   if (listState) {
     listState.textContent =
       `${sorted.length.toLocaleString('de-DE')} Titel in der Gesamtliste ` +
-      `(Sortierung: ${sortByStation ? 'Sender' : 'Plays'})`;
+      `(Sortierung: ${sortByStation ? 'Sender' : 'Plays'}${query ? ', gefiltert' : ''})`;
   }
 
   sorted.forEach((row, index) => {
@@ -179,11 +203,12 @@ function renderAllBackpoolTable(rows) {
 function renderBackpool(data) {
   lastBackpoolData = data;
   updateSortButton();
-  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const baseRows = Array.isArray(data?.rows) ? data.rows : [];
+  const query = getSearchQuery();
   const songCards = qs('songCards');
   songCards.innerHTML = '';
 
-  if (!rows.length) {
+  if (!baseRows.length) {
     qs('state').textContent = 'Keine Backpool-Daten für den gewählten Zeitraum.';
     qs('summary').textContent = '-';
     const tbody = qs('allBackpoolTable')?.querySelector('tbody');
@@ -196,13 +221,15 @@ function renderBackpool(data) {
   const preset = ROTATION_PRESETS[presetId] || ROTATION_PRESETS.balanced;
   qs('state').textContent =
     `Zeitraum ${data.from} bis ${data.to} | Profil: ${preset.label} | ` +
-    `Schwelle: ${Number(data.rotationMinDailyPlays ?? preset.minDaily).toFixed(2)} bis ${Number(data.lowRotationMaxDailyPlays ?? preset.maxDaily).toFixed(2)} Plays/Tag`;
-  const shownSongs = rows.reduce((sum, row) => sum + Number(row.rotationBackpoolTrackCount || 0), 0);
-  const totalBackpoolPlays = rows.reduce((sum, row) => sum + Number(row.rotationBackpoolPlays || 0), 0);
+    `Schwelle: ${Number(data.rotationMinDailyPlays ?? preset.minDaily).toFixed(2)} bis ${Number(data.lowRotationMaxDailyPlays ?? preset.maxDaily).toFixed(2)} Plays/Tag | ` +
+    `min. Sender-Alter: ${Number(data.minTrackAgeDays ?? preset.minTrackAgeDays).toLocaleString('de-DE')} Tage`;
+  const filteredAllTracks = allBackpoolTracks(baseRows).filter((track) => trackMatchesQuery(track, query));
+  const shownSongs = filteredAllTracks.length;
+  const totalBackpoolPlays = filteredAllTracks.reduce((sum, track) => sum + Number(track.plays || 0), 0);
   qs('summary').textContent =
     `Rotation-Backpool-Songs: ${shownSongs.toLocaleString('de-DE')} | ` +
-    `Backpool-Plays: ${totalBackpoolPlays.toLocaleString('de-DE')} | Sender: ${rows.length.toLocaleString('de-DE')}`;
-  renderAllBackpoolTable(rows);
+    `Backpool-Plays: ${totalBackpoolPlays.toLocaleString('de-DE')} | Sender: ${baseRows.length.toLocaleString('de-DE')}${query ? ' | Suche aktiv' : ''}`;
+  renderAllBackpoolTable(baseRows, query);
 
   const issueText = (value) => {
     switch (value) {
@@ -221,7 +248,8 @@ function renderBackpool(data) {
     }
   };
 
-  rows.forEach((row) => {
+  let renderedCardCount = 0;
+  baseRows.forEach((row) => {
     const card = document.createElement('article');
     card.className = 'backpool-card';
     const head = document.createElement('div');
@@ -232,10 +260,20 @@ function renderBackpool(data) {
     `;
     card.appendChild(head);
 
-    const tracks = Array.isArray(row.rotationBackpoolTracks) ? row.rotationBackpoolTracks : [];
-    const hotTracks = Array.isArray(row.hotRotationTracks) ? row.hotRotationTracks : [];
-    const sparseTracks = Array.isArray(row.sparseRotationTracks) ? row.sparseRotationTracks : [];
-    const unknownTracks = Array.isArray(row.unknownReleaseTracks) ? row.unknownReleaseTracks : [];
+    const stationMatchesQuery = !query || includesQuery(row.stationName, query) || includesQuery(row.stationId, query);
+    const tracks = (Array.isArray(row.rotationBackpoolTracks) ? row.rotationBackpoolTracks : [])
+      .filter((track) => trackMatchesQuery(track, query, row.stationName));
+    const hotTracks = (Array.isArray(row.hotRotationTracks) ? row.hotRotationTracks : [])
+      .filter((track) => trackMatchesQuery(track, query, row.stationName));
+    const sparseTracks = (Array.isArray(row.sparseRotationTracks) ? row.sparseRotationTracks : [])
+      .filter((track) => trackMatchesQuery(track, query, row.stationName));
+    const recentTracks = (Array.isArray(row.recentTracks) ? row.recentTracks : [])
+      .filter((track) => trackMatchesQuery(track, query, row.stationName));
+    const unknownTracks = (Array.isArray(row.unknownReleaseTracks) ? row.unknownReleaseTracks : [])
+      .filter((track) => trackMatchesQuery(track, query, row.stationName));
+    if (!stationMatchesQuery && !tracks.length && !hotTracks.length && !sparseTracks.length && !recentTracks.length && !unknownTracks.length) {
+      return;
+    }
     const pattern = row.rotationPattern || {};
     const topHours = Array.isArray(pattern.topHours) ? pattern.topHours : [];
     const peakText = topHours.length
@@ -288,11 +326,13 @@ function renderBackpool(data) {
       empty.textContent =
         `Keine Rotation-Backpool-Titel im Zeitraum. ` +
         `Hot Rotation: ${hotTracks.length.toLocaleString('de-DE')} | ` +
-        `Selten/zu kurz verteilt: ${sparseTracks.length.toLocaleString('de-DE')}.` +
+        `Selten/zu kurz verteilt: ${sparseTracks.length.toLocaleString('de-DE')} | ` +
+        `Zu neu im Sender: ${recentTracks.length.toLocaleString('de-DE')}.` +
         coverageHint +
         warmupHint;
       card.appendChild(empty);
       songCards.appendChild(card);
+      renderedCardCount += 1;
       return;
     }
 
@@ -304,7 +344,8 @@ function renderBackpool(data) {
       `Logik: ${Number(row.rotationMinDailyPlays ?? data.rotationMinDailyPlays ?? 0.35).toFixed(2)} bis ` +
       `${Number(row.lowRotationMaxDailyPlays ?? data.lowRotationMaxDailyPlays ?? 2).toFixed(2)} Plays/Tag, ` +
       `mind. ${Number(row.rotationEffectiveMinActiveDays ?? row.rotationMinActiveDays ?? data.rotationMinActiveDays ?? 5)} aktive Tage, ` +
-      `mind. ${Number(row.rotationEffectiveMinSpanDays ?? row.rotationMinSpanDays ?? data.rotationMinSpanDays ?? 28)} Spanntage. ` +
+      `mind. ${Number(row.rotationEffectiveMinSpanDays ?? row.rotationMinSpanDays ?? data.rotationMinSpanDays ?? 28)} Spanntage, ` +
+      `mind. ${Number(row.rotationEffectiveMinTrackAgeDays ?? row.minTrackAgeDays ?? data.minTrackAgeDays ?? 30)} Tage Sender-Alter. ` +
       `Datenbasis: ${Number(row.observedSpanDays || 0).toLocaleString('de-DE')} Tage. ` +
       `${row.rotationWarmupMode ? 'Warmup-Modus aktiv.' : ''}`;
     card.appendChild(hint);
@@ -399,6 +440,22 @@ function renderBackpool(data) {
       card.appendChild(list);
     }
 
+    if (recentTracks.length) {
+      const recentTitle = document.createElement('p');
+      recentTitle.className = 'text-secondary mt-3 mb-2';
+      recentTitle.textContent = 'Ausgeschlossen (zu neu im Sender):';
+      card.appendChild(recentTitle);
+
+      const list = document.createElement('ul');
+      list.className = 'mb-0';
+      recentTracks.slice(0, 5).forEach((track) => {
+        const li = document.createElement('li');
+        li.textContent = `${track.artist} - ${track.title} | Sender-Alter ${Number(track.stationAgeDays || 0).toLocaleString('de-DE')} Tage | ${Number(track.plays || 0).toLocaleString('de-DE')} Plays`;
+        list.appendChild(li);
+      });
+      card.appendChild(list);
+    }
+
     if (unknownTracks.length) {
       const candidateTitle = document.createElement('p');
       candidateTitle.className = 'text-secondary mt-3 mb-2';
@@ -416,7 +473,15 @@ function renderBackpool(data) {
     }
 
     songCards.appendChild(card);
+    renderedCardCount += 1;
   });
+
+  if (renderedCardCount === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'text-secondary mb-0';
+    empty.textContent = 'Keine Sender-Treffer fuer die aktuelle Suche.';
+    songCards.appendChild(empty);
+  }
 }
 
 async function loadBackpool() {
@@ -433,6 +498,7 @@ async function loadBackpool() {
   params.set('rotationMinDailyPlays', qs('rotationMinDailyPlaysInput').value || '0.35');
   params.set('rotationMinActiveDays', qs('rotationMinActiveDaysInput').value || '5');
   params.set('rotationMinSpanDays', qs('rotationMinSpanDaysInput').value || '28');
+  params.set('minTrackAgeDays', qs('minTrackAgeDaysInput').value || '30');
   params.set('rotationAdaptive', qs('rotationAdaptiveInput')?.checked ? '1' : '0');
   params.set('minConfidence', qs('minConfidenceInput').value || '0.72');
   params.set('lowRotationMaxDailyPlays', qs('lowRotationMaxDailyPlaysInput').value || '2');
@@ -457,6 +523,14 @@ function bindReload(id) {
       qs('state').textContent = `Fehler: ${error.message}`;
     });
   });
+}
+
+function debounce(fn, delay = 240) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), delay);
+  };
 }
 
 async function init() {
@@ -488,7 +562,13 @@ async function init() {
       });
     });
   }
-  ['stationSelect', 'fromInput', 'toInput', 'yearsInput', 'minPlaysInput', 'topInput', 'rotationMinDailyPlaysInput', 'rotationMinActiveDaysInput', 'rotationMinSpanDaysInput', 'rotationAdaptiveInput', 'minConfidenceInput', 'lowRotationMaxDailyPlaysInput', 'maxMetaLookupsInput', 'hydrateInput'].forEach(bindReload);
+  const searchInput = qs('backpoolSearchInput');
+  if (searchInput) {
+    searchInput.addEventListener('input', debounce(() => {
+      if (lastBackpoolData) renderBackpool(lastBackpoolData);
+    }));
+  }
+  ['stationSelect', 'fromInput', 'toInput', 'yearsInput', 'minPlaysInput', 'topInput', 'rotationMinDailyPlaysInput', 'rotationMinActiveDaysInput', 'rotationMinSpanDaysInput', 'minTrackAgeDaysInput', 'rotationAdaptiveInput', 'minConfidenceInput', 'lowRotationMaxDailyPlaysInput', 'maxMetaLookupsInput', 'hydrateInput'].forEach(bindReload);
 }
 
 init().catch((error) => {

@@ -9,7 +9,8 @@ import {
   runDailyEvaluation,
   runStationReport,
   runCoverageAudit,
-  runBackpoolAnalysis
+  runBackpoolAnalysis,
+  runTrackOrientationMaintenance
 } from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
 
@@ -120,6 +121,7 @@ program
   .option('--low-rotation-max-daily-plays <number>', 'Max avg plays/day for low-rotation backpool list', '2')
   .option('--rotation-min-active-days <number>', 'Minimum active days in range for rotation backpool', '5')
   .option('--rotation-min-span-days <number>', 'Minimum first-to-last span days for rotation backpool', '28')
+  .option('--min-track-age-days <number>', 'Minimum age of a track in station history to count as backpool', '30')
   .option('--rotation-adaptive <0|1>', 'Adapt rotation thresholds to available station history (default: 1)', '1')
   .option('--hydrate-missing-release', 'Enrich missing release metadata during analysis')
   .option('--max-meta-lookups <number>', 'Max metadata lookups during enrichment', '120')
@@ -138,6 +140,7 @@ program
         lowRotationMaxDailyPlays: Number(opts.lowRotationMaxDailyPlays),
         rotationMinActiveDays: Number(opts.rotationMinActiveDays),
         rotationMinSpanDays: Number(opts.rotationMinSpanDays),
+        minTrackAgeDays: Number(opts.minTrackAgeDays),
         rotationAdaptive: String(opts.rotationAdaptive ?? '1') !== '0',
         autoEnrichMissingRelease: Boolean(opts.hydrateMissingRelease),
         maxMetadataLookups: Number(opts.maxMetaLookups),
@@ -151,6 +154,30 @@ program
   });
 
 program
+  .command('maintain-db')
+  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--dry-run', 'Only report candidate merges, do not write changes')
+  .option('--max-pairs <number>', 'Maximum swapped pairs to process in one run', '5000')
+  .option('--min-score-gap <number>', 'Minimum score difference to merge a swapped pair', '0.35')
+  .option('--min-play-ratio <number>', 'Minimum play-count ratio fallback for close scores', '1.2')
+  .action((opts) => {
+    try {
+      const result = runTrackOrientationMaintenance({
+        dbPath: opts.db,
+        dryRun: Boolean(opts.dryRun),
+        maxPairs: Number(opts.maxPairs),
+        minScoreGap: Number(opts.minScoreGap),
+        minPlayRatio: Number(opts.minPlayRatio),
+        logger
+      });
+      logger.info(result, 'database maintenance finished');
+    } catch (err) {
+      logger.error({ err: err.message }, 'database maintenance failed');
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command('daily-job')
   .requiredOption('--config <path>', 'Path to config.yaml')
   .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
@@ -159,6 +186,7 @@ program
   .action(async (opts) => {
     runIngest({ configPath: opts.config, dbPath: opts.db, logger })
       .then(async () => {
+        runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,
@@ -225,6 +253,7 @@ program
       if (opts.startupReport) {
         logger.info('running startup ingest/evaluation/report before API boot');
         await runIngest({ configPath: opts.config, dbPath: opts.db, logger });
+        runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,
