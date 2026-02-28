@@ -18,7 +18,8 @@
         <a class="navbar-brand fw-semibold" href="/backpool">JUKA Backpool</a>
         <div class="d-flex align-items-center gap-2 ms-auto">
           <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Dashboard</a>
-          <a class="btn btn-outline-secondary btn-sm" href="/backpool">Backpool</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/new-titles">Neue Titel</a>
+          <a class="btn btn-primary btn-sm" href="/backpool">Backpool</a>
           <a class="btn btn-outline-secondary btn-sm" href="/tracks">Tracks</a>
           <a class="btn btn-outline-secondary btn-sm" href="/api/docs" target="_blank" rel="noreferrer">API</a>
           <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dark</button>
@@ -30,7 +31,7 @@
       <section class="card shadow-sm mb-3">
         <div class="card-body">
           <h2 class="h5 mb-2">Backpool Bericht</h2>
-          <p class="text-secondary mb-3">Analyse älterer Goldtitel pro Sender.</p>
+          <p class="text-secondary mb-3">Konkrete Rotation-Backpool-Titel je Sender, inkl. leicht lesbarer Rotationsmuster.</p>
           <div class="row g-2 align-items-end">
             <div class="col-12 col-lg-3">
               <label class="form-label">Sender</label>
@@ -44,24 +45,72 @@
               <label class="form-label">Bis</label>
               <input id="toInput" class="form-control" type="date" />
             </div>
-            <div class="col-4 col-lg-1">
-              <label class="form-label">Jahre</label>
-              <input id="yearsInput" class="form-control" type="number" min="1" max="40" value="5" />
-            </div>
-            <div class="col-4 col-lg-2">
-              <label class="form-label">Min. Plays</label>
-              <input id="minPlaysInput" class="form-control" type="number" min="1" max="500" value="3" />
-            </div>
-            <div class="col-4 col-lg-1">
-              <label class="form-label">Top</label>
-              <input id="topInput" class="form-control" type="number" min="1" max="100" value="10" />
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label">Min. Confidence</label>
-              <input id="minConfidenceInput" class="form-control" type="number" min="0" max="1" step="0.01" value="0.72" />
+            <div class="col-12 col-lg-3">
+              <label class="form-label">Backpool-Profil</label>
+              <select id="rotationPresetSelect" class="form-select">
+                <option value="balanced" selected>Standard</option>
+                <option value="easy">Mehr Kandidaten (lockerer)</option>
+                <option value="strict">Weniger, aber klarere (strenger)</option>
+              </select>
+              <small id="presetHint" class="text-secondary"></small>
             </div>
             <div class="col-6 col-lg-1">
+              <label class="form-label">Min. Plays</label>
+              <input id="minPlaysInput" class="form-control" type="number" min="1" max="500" value="1" />
+            </div>
+            <div class="col-6 col-lg-1">
+              <label class="form-label">Top</label>
+              <input id="topInput" class="form-control" type="number" min="1" max="500" value="500" />
+            </div>
+            <div class="col-12 col-lg-2">
               <button id="loadBtn" class="btn btn-primary w-100" type="button">Laden</button>
+            </div>
+            <div class="col-12">
+              <details class="backpool-advanced">
+                <summary>Erweiterte Optionen</summary>
+                <div class="row g-2 mt-2">
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Rotation min/Tag</label>
+                    <input id="rotationMinDailyPlaysInput" class="form-control" type="number" min="0.01" max="24" step="0.01" value="0.35" />
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Rotation max/Tag</label>
+                    <input id="lowRotationMaxDailyPlaysInput" class="form-control" type="number" min="0.1" max="24" step="0.1" value="1.2" />
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Min. aktive Tage</label>
+                    <input id="rotationMinActiveDaysInput" class="form-control" type="number" min="1" max="366" step="1" value="4" />
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Min. Spanntage</label>
+                    <input id="rotationMinSpanDaysInput" class="form-control" type="number" min="1" max="366" step="1" value="14" />
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Jahre (Legacy)</label>
+                    <input id="yearsInput" class="form-control" type="number" min="1" max="40" value="5" />
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Min. Confidence</label>
+                    <input id="minConfidenceInput" class="form-control" type="number" min="0" max="1" step="0.01" value="0.72" />
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label">Meta-Lookups</label>
+                    <input id="maxMetaLookupsInput" class="form-control" type="number" min="0" max="400" step="10" value="40" />
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <div class="form-check mt-4">
+                      <input class="form-check-input" type="checkbox" id="hydrateInput" />
+                      <label class="form-check-label" for="hydrateInput">Release-Daten anreichern</label>
+                    </div>
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <div class="form-check mt-4">
+                      <input class="form-check-input" type="checkbox" id="rotationAdaptiveInput" checked />
+                      <label class="form-check-label" for="rotationAdaptiveInput">Adaptive Auswertung</label>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
         </div>
@@ -71,6 +120,28 @@
         <div class="card-body">
           <p id="state" class="text-secondary mb-2">Lade Backpool-Daten...</p>
           <p id="summary" class="mb-3"></p>
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <button id="sortModeBtn" class="btn btn-outline-secondary btn-sm" type="button">Senderweise sortieren</button>
+            <span id="listState" class="text-secondary"></span>
+          </div>
+          <div class="table-wrap mb-3">
+            <table id="allBackpoolTable" class="table table-sm table-hover align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Song</th>
+                  <th>Sender</th>
+                  <th>Plays</th>
+                  <th>Ø/Tag</th>
+                  <th>Aktive Tage</th>
+                  <th>Spanntage</th>
+                  <th>Ø Abstand</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <h3 class="h6 mb-2">Sender-Details</h3>
           <div id="songCards" class="backpool-cards"></div>
         </div>
       </section>

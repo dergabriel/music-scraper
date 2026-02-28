@@ -30,10 +30,11 @@ stations:
 
   - id: "kissfm"
     name: "KISS FM"
-    playlist_url: "https://www.phonostar.de/radio/988-kiss-fm/titel"
+    playlist_url: "https://radio-horen.de/playlists/kiss-fm-berlin"
     fallback_urls:
       - "https://onlineradiobox.com/de/kissfmberlin/playlist/"
-      - "https://radiospinner.com/de/kiss-fm-new-beats-28374/tracklist/"
+      - "https://onlineradiobox.com/de/kissfreshbeats/playlist/"
+      - "https://radiospinner.com/de/kiss-fm-popular-30456/tracklist/"
     parser: "generic_html_or_onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
@@ -42,11 +43,10 @@ stations:
 
   - id: "fluxfm"
     name: "FluxFM"
-    playlist_url: "https://www.phonostar.de/radio/fluxfm/titel"
+    playlist_url: "https://onlineradiobox.com/de/fluxfm/playlist/"
     fallback_urls:
-      - "https://onlineradiobox.com/de/fluxfm/playlist/"
-      - "https://radiospinner.com/de/fluxfm-berlin-25229/tracklist/"
-    parser: "generic_html_or_onlineradiobox"
+      - "https://onlineradiobox.com/de/fluxfmberlin/playlist/"
+    parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
     min_daily_hours: 18
@@ -61,11 +61,10 @@ stations:
 
   - id: "youfm"
     name: "YOU FM"
-    playlist_url: "https://www.phonostar.de/radio/you-fm/titel"
+    playlist_url: "https://onlineradiobox.com/de/youfmde/playlist/"
     fallback_urls:
-      - "https://onlineradiobox.com/de/youfmde/playlist/"
       - "https://onlineradiobox.com/de/youfm/playlist/"
-    parser: "generic_html_or_onlineradiobox"
+    parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
 
@@ -99,11 +98,10 @@ stations:
 
   - id: "jam_fm"
     name: "JAM FM"
-    playlist_url: "https://www.phonostar.de/radio/jam-fm-berlin/titel"
+    playlist_url: "https://onlineradiobox.com/de/jam/playlist/"
     fallback_urls:
-      - "https://onlineradiobox.com/de/jam/playlist/"
       - "https://onlineradiobox.com/de/jamfmberlin/playlist/"
-    parser: "generic_html_or_onlineradiobox"
+    parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
 
@@ -116,10 +114,11 @@ stations:
 
   - id: "absolut_hot"
     name: "Absolut HOT"
-    playlist_url: "https://www.phonostar.de/radio/absolut-hot/titel"
+    playlist_url: "https://radio-horen.de/playlists/absolut-hot"
     fallback_urls:
+      - "https://radiospinner.com/de/absolut-hot-32718/tracklist/"
       - "https://onlineradiobox.com/de/absoluthot/playlist/"
-      - "https://radiospinner.com/de/absolut-hot-53206/tracklist/"
+      - "https://onlineradiobox.com/de/absolut/playlist/"
     parser: "generic_html_or_onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"

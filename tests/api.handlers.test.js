@@ -93,6 +93,7 @@ describe('api handlers', () => {
     expect(routePaths).toContain('/dashboard');
     expect(routePaths).toContain('/backpool');
     expect(routePaths).toContain('/tracks');
+    expect(routePaths).toContain('/new-titles');
     expect(routePaths).toContain('/api/tracks');
 
     const healthRes = mkRes();

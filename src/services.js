@@ -12,6 +12,9 @@ import {
   getStationTotalPlays,
   getStationPlayedAtUtc,
   getOverallTrackCounts,
+  upsertBackpoolStationSummary,
+  clearBackpoolTrackCatalogForStation,
+  upsertBackpoolTrackCatalogRow,
   clearDailyStatsForDate,
   upsertDailyStationStat,
   upsertDailyTrackStat,
@@ -451,6 +454,12 @@ export async function runBackpoolAnalysis({
   autoEnrichMissingRelease = false,
   maxMetadataLookups = 80,
   minReleaseConfidence = 0.72,
+  rotationMinDailyPlays = 0.35,
+  lowRotationMaxDailyPlays = 2,
+  rotationMinActiveDays = 5,
+  rotationMinSpanDays = 28,
+  rotationAdaptive = true,
+  persistToDb = true,
   logger
 }) {
   const config = loadConfig(configPath);
@@ -468,6 +477,12 @@ export async function runBackpoolAnalysis({
   const backpoolCutoff = toBerlin.minus({ years: Number(years) || 5 }).startOf('day');
   const topLimit = Math.max(1, Number(top) || 20);
   const confidenceFloor = Math.max(0, Math.min(Number(minReleaseConfidence) || 0, 1));
+  const rotationMinDaily = Math.max(0.01, Number(rotationMinDailyPlays) || 0.35);
+  const lowRotationMax = Math.max(0.1, Number(lowRotationMaxDailyPlays) || 2);
+  const rotationMinDays = Math.max(1, Math.floor(Number(rotationMinActiveDays) || 5));
+  const rotationSpanMin = Math.max(1, Math.floor(Number(rotationMinSpanDays) || 28));
+  const adaptiveRotation = rotationAdaptive !== false;
+  const rangeDays = Math.max(1, Math.floor(toBerlin.diff(fromBerlin, 'days').days) + 1);
 
   const selectedStations = stationId
     ? config.stations.filter((station) => station.id === stationId)
@@ -479,10 +494,11 @@ export async function runBackpoolAnalysis({
 
   const enrichEnabled = Boolean(autoEnrichMissingRelease) && process.env.NODE_ENV !== 'test';
   const verifier = enrichEnabled ? new TrackVerifier({ db, logger }) : null;
-  let enrichBudget = Math.max(0, Number(maxMetadataLookups) || 0);
+  let enrichBudgetRemaining = Math.max(0, Number(maxMetadataLookups) || 0);
 
   const rows = [];
-  for (const station of selectedStations) {
+  for (let stationIndex = 0; stationIndex < selectedStations.length; stationIndex += 1) {
+    const station = selectedStations[stationIndex];
     upsertStation(db, station);
     let trackRows = getStationTrackCountsWithMetadata(db, station.id, rangeStartUtcIso, rangeEndUtcIso)
       .filter((row) =>
@@ -490,27 +506,58 @@ export async function runBackpoolAnalysis({
         !isLikelyJingleLike(row.artist, row.title, { stationName: station.name, stationId: station.id })
       );
 
-    if (verifier && enrichBudget > 0) {
+    if (verifier && enrichBudgetRemaining > 0) {
+      const stationsRemaining = Math.max(1, selectedStations.length - stationIndex);
+      const stationEnrichBudget = Math.max(1, Math.floor(enrichBudgetRemaining / stationsRemaining));
       const enrichCandidates = trackRows
         .filter((row) => !row.release_date_utc && Number(row.count || 0) >= Number(minTrackPlays || 1))
         .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
-        .slice(0, enrichBudget);
+        .slice(0, stationEnrichBudget);
+      let enrichFailures = 0;
+      let lastEnrichFailure = null;
+      let enrichAttempts = 0;
+      let providerBackoffHit = false;
 
       for (const candidate of enrichCandidates) {
         try {
-          await verifier.enrichMetadata({
+          enrichAttempts += 1;
+          const enrichResult = await verifier.enrichMetadata({
             trackKey: candidate.track_key,
             artist: candidate.artist,
             title: candidate.title
-          });
+          }, { includeChart: false, quietErrors: true });
+
+          if (enrichResult?.metadata?.verification_source === 'itunes_error') {
+            enrichFailures += 1;
+            const payload = String(enrichResult.metadata.payload_json ?? '');
+            const transientBackoff = /temporarily unavailable|backoff/i.test(payload);
+            if (transientBackoff) {
+              providerBackoffHit = true;
+              lastEnrichFailure = 'iTunes backoff active';
+              break;
+            }
+          }
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger?.warn({ trackKey: candidate.track_key, error: message }, 'backpool metadata enrichment failed');
+          enrichFailures += 1;
+          lastEnrichFailure = error instanceof Error ? error.message : String(error);
         }
       }
 
-      enrichBudget = Math.max(0, enrichBudget - enrichCandidates.length);
-      if (enrichCandidates.length > 0) {
+      if (enrichFailures > 0) {
+        logger?.warn(
+          {
+            station: station.id,
+            attempted: enrichAttempts,
+            failed: enrichFailures,
+            providerBackoffHit,
+            lastError: lastEnrichFailure
+          },
+          'backpool metadata enrichment had failures'
+        );
+      }
+
+      enrichBudgetRemaining = Math.max(0, enrichBudgetRemaining - enrichAttempts);
+      if (enrichAttempts > 0) {
         trackRows = getStationTrackCountsWithMetadata(db, station.id, rangeStartUtcIso, rangeEndUtcIso)
           .filter((row) =>
             !isLikelyNoiseTrack(row.artist, row.title, { stationName: station.name, stationId: station.id }) &&
@@ -520,11 +567,55 @@ export async function runBackpoolAnalysis({
     }
 
     const totalPlays = getStationTotalPlays(db, station.id, rangeStartUtcIso, rangeEndUtcIso);
+    const observedWindow = db.prepare(`
+      select count(distinct substr(played_at_utc, 1, 10)) as c
+      , min(played_at_utc) as min_played_at_utc
+      , max(played_at_utc) as max_played_at_utc
+      from plays
+      where station_id = ?
+        and played_at_utc >= ?
+        and played_at_utc < ?
+    `).get(station.id, rangeStartUtcIso, rangeEndUtcIso) ?? { c: 0, min_played_at_utc: null, max_played_at_utc: null };
+    const observedCoverageDays = Number(observedWindow.c || 0);
+    const observedMin = observedWindow.min_played_at_utc
+      ? DateTime.fromISO(observedWindow.min_played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ)
+      : null;
+    const observedMax = observedWindow.max_played_at_utc
+      ? DateTime.fromISO(observedWindow.max_played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ)
+      : null;
+    const observedSpanDays =
+      observedMin && observedMin.isValid && observedMax && observedMax.isValid
+        ? Math.max(1, Math.floor(observedMax.startOf('day').diff(observedMin.startOf('day'), 'days').days) + 1)
+        : 0;
+    const warmupMode = adaptiveRotation && observedSpanDays > 0 && observedSpanDays < rotationSpanMin;
+    const rateBasisDays = warmupMode
+      ? Math.max(observedSpanDays, 2)
+      : (observedSpanDays > 0 ? observedSpanDays : rangeDays);
+    const effectiveRotationSpanMin = warmupMode
+      ? Math.min(observedSpanDays, 2)
+      : adaptiveRotation
+        ? Math.min(rotationSpanMin, Math.max(1, observedSpanDays || observedCoverageDays || 1))
+        : rotationSpanMin;
+    const minActiveFromCadence = Math.max(1, Math.ceil(effectiveRotationSpanMin * rotationMinDaily));
+    const effectiveRotationActiveMin = adaptiveRotation
+      ? Math.min(rotationMinDays, minActiveFromCadence)
+      : rotationMinDays;
+
     const classifiedRows = trackRows.map((row) => {
       const release = row.release_date_utc ? DateTime.fromISO(row.release_date_utc, { zone: 'utc' }).setZone(BERLIN_TZ) : null;
+      const firstPlayed = row.first_played_at_utc ? DateTime.fromISO(row.first_played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ) : null;
+      const lastPlayed = row.last_played_at_utc ? DateTime.fromISO(row.last_played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ) : null;
       const parsedConfidence = Number(row.verification_confidence);
       const confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : null;
       const verifiedExists = row.verified_exists === null || row.verified_exists === undefined ? null : Number(row.verified_exists);
+      const plays = Number(row.count || 0);
+      const activeDays = Math.max(0, Number(row.active_days || 0));
+      const playsPerDay = plays / rateBasisDays;
+      const spanDays =
+        firstPlayed && firstPlayed.isValid && lastPlayed && lastPlayed.isValid
+          ? Math.max(1, Math.floor(lastPlayed.startOf('day').diff(firstPlayed.startOf('day'), 'days').days) + 1)
+          : 0;
+      const cadenceDays = plays > 0 ? rateBasisDays / plays : null;
 
       let metadataIssue = null;
       if (!row.release_date_utc) {
@@ -542,27 +633,67 @@ export async function runBackpoolAnalysis({
       return {
         ...row,
         release,
+        firstPlayed,
+        lastPlayed,
         verification_confidence: confidence,
         verified_exists: verifiedExists,
         metadataIssue,
-        hasValidatedRelease: Boolean(release && release.isValid && metadataIssue === null)
+        hasValidatedRelease: Boolean(release && release.isValid && metadataIssue === null),
+        plays,
+        activeDays,
+        playsPerDay,
+        spanDays,
+        cadenceDays
       };
     });
 
     const withRelease = classifiedRows.filter((row) => row.hasValidatedRelease);
+    const rotationBackpoolTracks = classifiedRows
+      .filter((row) => (
+        row.plays >= Number(minTrackPlays || 1) &&
+        row.playsPerDay >= rotationMinDaily &&
+        row.playsPerDay <= lowRotationMax &&
+        row.activeDays >= effectiveRotationActiveMin &&
+        row.spanDays >= effectiveRotationSpanMin
+      ))
+      .sort((a, b) => {
+        if (a.playsPerDay < b.playsPerDay) return -1;
+        if (a.playsPerDay > b.playsPerDay) return 1;
+        return Number(b.plays || 0) - Number(a.plays || 0);
+      });
+    const hotRotationTracks = classifiedRows
+      .filter((row) => row.playsPerDay > lowRotationMax)
+      .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
+    const sparseRotationTracks = classifiedRows
+      .filter((row) => (
+        row.plays < Number(minTrackPlays || 1) ||
+        row.playsPerDay < rotationMinDaily ||
+        row.activeDays < rotationMinDays ||
+        row.spanDays < rotationSpanMin
+      ))
+      .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
 
     const backpoolTracks = withRelease
-      .filter((row) => row.release <= backpoolCutoff && Number(row.count || 0) >= Number(minTrackPlays || 1))
-      .sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
+      .filter((row) => row.release <= backpoolCutoff && Number(row.plays || 0) >= Number(minTrackPlays || 1))
+      .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
+    const lowRotationBackpoolTracks = backpoolTracks
+      .filter((row) => (Number(row.plays || 0) / rangeDays) <= lowRotationMax)
+      .sort((a, b) => {
+        const aPpd = Number(a.plays || 0) / rangeDays;
+        const bPpd = Number(b.plays || 0) / rangeDays;
+        if (aPpd < bPpd) return -1;
+        if (aPpd > bPpd) return 1;
+        return Number(b.plays || 0) - Number(a.plays || 0);
+      });
     const oldestTracks = withRelease
       .slice()
       .sort((a, b) => {
         if (a.release < b.release) return -1;
         if (a.release > b.release) return 1;
-        return Number(b.count || 0) - Number(a.count || 0);
+        return Number(b.plays || 0) - Number(a.plays || 0);
       });
 
-    const backpoolPlays = backpoolTracks.reduce((sum, row) => sum + Number(row.count || 0), 0);
+    const backpoolPlays = backpoolTracks.reduce((sum, row) => sum + Number(row.plays || 0), 0);
     const share = totalPlays > 0 ? backpoolPlays / totalPlays : 0;
     const avgAgeYears =
       backpoolTracks.length > 0
@@ -573,22 +704,45 @@ export async function runBackpoolAnalysis({
       trackKey: row.track_key,
       artist: row.artist,
       title: row.title,
-      plays: Number(row.count || 0),
+      plays: Number(row.plays || 0),
+      playsPerDay: Number(row.plays || 0) / rangeDays,
       releaseDate: row.release.toISODate(),
       ageYears: releaseAgeYears(row.release, toBerlin),
       verificationConfidence: row.verification_confidence,
       genre: row.genre ?? null,
       album: row.album ?? null
     });
+    const mapRotationTrack = (row) => ({
+      trackKey: row.track_key,
+      artist: row.artist,
+      title: row.title,
+      plays: Number(row.plays || 0),
+      playsPerDay: Number(row.playsPerDay || 0),
+      activeDays: Number(row.activeDays || 0),
+      spanDays: Number(row.spanDays || 0),
+      cadenceDays: Number.isFinite(row.cadenceDays) ? row.cadenceDays : null,
+      firstPlayedDate: row.firstPlayed?.isValid ? row.firstPlayed.toISODate() : null,
+      lastPlayedDate: row.lastPlayed?.isValid ? row.lastPlayed.toISODate() : null,
+      releaseDate: row.release?.isValid ? row.release.toISODate() : null,
+      verificationConfidence: row.verification_confidence,
+      genre: row.genre ?? null,
+      album: row.album ?? null
+    });
     const unknownReleaseTracks = classifiedRows
-      .filter((row) => !row.hasValidatedRelease && Number(row.count || 0) >= Number(minTrackPlays || 1))
-      .sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
+      .filter((row) => !row.hasValidatedRelease && Number(row.plays || 0) >= Number(minTrackPlays || 1))
+      .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0))
       .slice(0, topLimit)
       .map((row) => ({
         trackKey: row.track_key,
         artist: row.artist,
         title: row.title,
-        plays: Number(row.count || 0),
+        plays: Number(row.plays || 0),
+        playsPerDay: Number(row.playsPerDay || 0),
+        activeDays: Number(row.activeDays || 0),
+        spanDays: Number(row.spanDays || 0),
+        cadenceDays: Number.isFinite(row.cadenceDays) ? row.cadenceDays : null,
+        firstPlayedDate: row.firstPlayed?.isValid ? row.firstPlayed.toISODate() : null,
+        lastPlayedDate: row.lastPlayed?.isValid ? row.lastPlayed.toISODate() : null,
         releaseDate: row.release && row.release.isValid ? row.release.toISODate() : null,
         ageYears: null,
         verificationConfidence: row.verification_confidence,
@@ -598,6 +752,155 @@ export async function runBackpoolAnalysis({
       }));
 
     const unvalidatedReleaseCount = classifiedRows.filter((row) => !row.hasValidatedRelease).length;
+    const rotationBackpoolPlays = rotationBackpoolTracks.reduce((sum, row) => sum + Number(row.plays || 0), 0);
+    const rotationBackpoolShare = totalPlays > 0 ? rotationBackpoolPlays / totalPlays : 0;
+    const cadenceSamples = rotationBackpoolTracks
+      .map((row) => Number(row.cadenceDays))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const rotationPattern = {
+      sampleDays: Math.max(1, observedSpanDays || rateBasisDays || rangeDays),
+      activeHourPresencePct: 0,
+      activeHoursPerDayAvg: 0,
+      repeatsShare: 0,
+      repeatsPerTrackAvg: 0,
+      tracksWithSameDayRepeatCount: 0,
+      tracksWithSameDayRepeatPct: 0,
+      averageCadenceDays: cadenceSamples.length
+        ? cadenceSamples.reduce((sum, value) => sum + value, 0) / cadenceSamples.length
+        : null,
+      topHours: []
+    };
+
+    if (rotationBackpoolTracks.length > 0 && rotationBackpoolPlays > 0) {
+      const rotationSet = new Set(rotationBackpoolTracks.map((row) => row.track_key));
+      const rotationPlayRows = db.prepare(`
+        select track_key, played_at_utc
+        from plays
+        where station_id = ?
+          and played_at_utc >= ?
+          and played_at_utc < ?
+      `).all(station.id, rangeStartUtcIso, rangeEndUtcIso).filter((row) => rotationSet.has(row.track_key));
+
+      const hourlyPlays = Array.from({ length: 24 }, () => 0);
+      const activeHourSlots = new Set();
+      const dailyPlaysByTrack = new Map();
+
+      for (const play of rotationPlayRows) {
+        const dt = DateTime.fromISO(play.played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ);
+        if (!dt.isValid) continue;
+        hourlyPlays[dt.hour] += 1;
+        activeHourSlots.add(dt.toFormat('yyyy-LL-dd HH'));
+        const day = dt.toISODate();
+        const currentByDay = dailyPlaysByTrack.get(play.track_key) ?? new Map();
+        currentByDay.set(day, Number(currentByDay.get(day) || 0) + 1);
+        dailyPlaysByTrack.set(play.track_key, currentByDay);
+      }
+
+      let tracksWithSameDayRepeatCount = 0;
+      for (const byDay of dailyPlaysByTrack.values()) {
+        const hasSameDayRepeat = Array.from(byDay.values()).some((count) => count >= 2);
+        if (hasSameDayRepeat) tracksWithSameDayRepeatCount += 1;
+      }
+
+      const sampleDays = Math.max(1, observedSpanDays || rateBasisDays || rangeDays);
+      const activeHourPresencePct = (activeHourSlots.size / (sampleDays * 24)) * 100;
+      const activeHoursPerDayAvg = activeHourSlots.size / sampleDays;
+      const repeats = Math.max(0, rotationBackpoolPlays - rotationBackpoolTracks.length);
+      const repeatsShare = rotationBackpoolPlays > 0 ? repeats / rotationBackpoolPlays : 0;
+      const tracksWithSameDayRepeatPct =
+        rotationBackpoolTracks.length > 0 ? tracksWithSameDayRepeatCount / rotationBackpoolTracks.length : 0;
+      const topHours = hourlyPlays
+        .map((plays, hour) => ({
+          hour,
+          plays,
+          share: rotationBackpoolPlays > 0 ? plays / rotationBackpoolPlays : 0
+        }))
+        .filter((row) => row.plays > 0)
+        .sort((a, b) => b.plays - a.plays)
+        .slice(0, 4);
+
+      rotationPattern.sampleDays = sampleDays;
+      rotationPattern.activeHourPresencePct = activeHourPresencePct;
+      rotationPattern.activeHoursPerDayAvg = activeHoursPerDayAvg;
+      rotationPattern.repeatsShare = repeatsShare;
+      rotationPattern.repeatsPerTrackAvg = rotationBackpoolPlays / rotationBackpoolTracks.length;
+      rotationPattern.tracksWithSameDayRepeatCount = tracksWithSameDayRepeatCount;
+      rotationPattern.tracksWithSameDayRepeatPct = tracksWithSameDayRepeatPct;
+      rotationPattern.topHours = topHours;
+    }
+
+    if (persistToDb) {
+      const analyzedAtUtc = isoUtcNow();
+      const rotationSet = new Set(rotationBackpoolTracks.map((row) => row.track_key));
+      const hotSet = new Set(hotRotationTracks.map((row) => row.track_key));
+      const lowReleaseSet = new Set(lowRotationBackpoolTracks.map((row) => row.track_key));
+      const releaseSet = new Set(backpoolTracks.map((row) => row.track_key));
+
+      const tx = db.transaction(() => {
+        clearBackpoolTrackCatalogForStation(db, station.id);
+
+        for (const row of classifiedRows) {
+          let classification = 'sparse_rotation';
+          if (rotationSet.has(row.track_key)) classification = 'rotation_backpool';
+          else if (hotSet.has(row.track_key)) classification = 'hot_rotation';
+
+          upsertBackpoolTrackCatalogRow(db, {
+            station_id: station.id,
+            track_key: row.track_key,
+            station_name: station.name,
+            artist: row.artist,
+            title: row.title,
+            classification,
+            analysis_from_berlin: fromBerlin.toISODate(),
+            analysis_to_berlin: toBerlin.toISODate(),
+            analyzed_at_utc: analyzedAtUtc,
+            range_days: rangeDays,
+            plays: Number(row.plays || 0),
+            plays_per_day: Number(row.playsPerDay || 0),
+            active_days: Number(row.activeDays || 0),
+            span_days: Number(row.spanDays || 0),
+            cadence_days: Number.isFinite(row.cadenceDays) ? row.cadenceDays : null,
+            first_played_at_utc: row.first_played_at_utc ?? null,
+            last_played_at_utc: row.last_played_at_utc ?? null,
+            release_date_utc: row.release_date_utc ?? null,
+            verified_exists: row.verified_exists,
+            verification_confidence: row.verification_confidence,
+            metadata_issue: row.metadataIssue,
+            is_rotation_backpool: rotationSet.has(row.track_key) ? 1 : 0,
+            is_release_backpool: releaseSet.has(row.track_key) ? 1 : 0,
+            is_low_rotation_release_backpool: lowReleaseSet.has(row.track_key) ? 1 : 0
+          });
+        }
+
+        upsertBackpoolStationSummary(db, {
+          station_id: station.id,
+          station_name: station.name,
+          analysis_from_berlin: fromBerlin.toISODate(),
+          analysis_to_berlin: toBerlin.toISODate(),
+          analyzed_at_utc: analyzedAtUtc,
+          range_days: rangeDays,
+          observed_coverage_days: observedCoverageDays,
+          observed_span_days: observedSpanDays,
+          total_plays: totalPlays,
+          total_tracks: classifiedRows.length,
+          tracks_with_release: withRelease.length,
+          unvalidated_release_count: unvalidatedReleaseCount,
+          rotation_min_daily_plays: rotationMinDaily,
+          rotation_max_daily_plays: lowRotationMax,
+          rotation_min_active_days: rotationMinDays,
+          rotation_min_span_days: rotationSpanMin,
+          rotation_backpool_track_count: rotationBackpoolTracks.length,
+          rotation_backpool_plays: rotationBackpoolPlays,
+          rotation_backpool_share: rotationBackpoolShare,
+          hot_rotation_track_count: hotRotationTracks.length,
+          sparse_rotation_track_count: sparseRotationTracks.length,
+          release_backpool_track_count: backpoolTracks.length,
+          release_backpool_plays: backpoolPlays,
+          release_backpool_share: share
+        });
+      });
+      tx();
+    }
 
     rows.push({
       stationId: station.id,
@@ -607,11 +910,33 @@ export async function runBackpoolAnalysis({
       tracksWithRelease: withRelease.length,
       unvalidatedReleaseCount,
       minReleaseConfidence: confidenceFloor,
+      rotationMinDailyPlays: rotationMinDaily,
+      lowRotationMaxDailyPlays: lowRotationMax,
+      rotationMinActiveDays: rotationMinDays,
+      rotationMinSpanDays: rotationSpanMin,
+      rotationAdaptive: adaptiveRotation,
+      rotationWarmupMode: warmupMode,
+      rotationEffectiveMinActiveDays: effectiveRotationActiveMin,
+      rotationEffectiveMinSpanDays: effectiveRotationSpanMin,
+      rotationRateBasisDays: rateBasisDays,
+      rangeDays,
+      observedCoverageDays,
+      observedSpanDays,
+      hasRotationHistory: observedSpanDays >= rotationSpanMin,
+      rotationBackpoolTrackCount: rotationBackpoolTracks.length,
+      rotationBackpoolPlays,
+      rotationBackpoolShare,
+      rotationPattern,
       backpoolTrackCount: backpoolTracks.length,
+      lowRotationBackpoolTrackCount: lowRotationBackpoolTracks.length,
       backpoolPlays,
       backpoolShare: share,
       avgBackpoolAgeYears: avgAgeYears,
+      rotationBackpoolTracks: rotationBackpoolTracks.slice(0, topLimit).map(mapRotationTrack),
+      hotRotationTracks: hotRotationTracks.slice(0, topLimit).map(mapRotationTrack),
+      sparseRotationTracks: sparseRotationTracks.slice(0, topLimit).map(mapRotationTrack),
       topBackpoolTracks: backpoolTracks.slice(0, topLimit).map(mapTrack),
+      lowRotationBackpoolTracks: lowRotationBackpoolTracks.slice(0, topLimit).map(mapTrack),
       oldestTracks: oldestTracks.slice(0, topLimit).map(mapTrack),
       unknownReleaseTracks
     });
@@ -623,32 +948,52 @@ export async function runBackpoolAnalysis({
     const lines = [
       `# JUKA Backpool Analysis ${fromBerlin.toISODate()} bis ${toBerlin.toISODate()}`,
       '',
-      `- Definition: Backpool = Tracks mit validiertem Release-Datum **<= ${backpoolCutoff.toISODate()}** (mind. ${minTrackPlays} Plays im Zeitraum)`,
-      `- Validierung: nur Release-Daten mit Confidence **>= ${confidenceFloor.toFixed(2)}**`,
+      `- Primäre Definition (Rotation): Ø Plays/Tag **${rotationMinDaily.toFixed(2)} bis ${lowRotationMax.toFixed(2)}**, aktive Tage **>= ${rotationMinDays}**, Spannweite **>= ${rotationSpanMin} Tage**`,
+      adaptiveRotation
+        ? '- Adaptive Auswertung aktiv: Bei kurzer Historie werden Mindestwerte pro Sender auf die verfügbare Datenbasis skaliert (Warmup-Modus).'
+        : '- Adaptive Auswertung deaktiviert: Es gelten die festen Mindestwerte für alle Sender.',
+      `- Zusatzsicht (Release-basiert): Release **<= ${backpoolCutoff.toISODate()}**, Confidence **>= ${confidenceFloor.toFixed(2)}**`,
       '',
-      '| Station | Plays gesamt | Backpool Plays | Backpool Anteil | Backpool Tracks | Datenabdeckung (Release) | Ø Alter Backpool (Jahre) |',
+      '| Station | Plays gesamt | Rotation-Backpool Plays | Rotation-Backpool Anteil | Rotation-Backpool Tracks | Datenabdeckung (Release) | Ø Alter Release-Backpool (Jahre) |',
       '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'
     ];
 
     rows.forEach((row) => {
       lines.push(
-        `| ${row.stationName} | ${row.totalPlays} | ${row.backpoolPlays} | ${(row.backpoolShare * 100).toFixed(1)}% | ${row.backpoolTrackCount} | ${row.totalTracks ? ((row.tracksWithRelease / row.totalTracks) * 100).toFixed(1) : '0.0'}% | ${row.avgBackpoolAgeYears.toFixed(1)} |`
+        `| ${row.stationName} | ${row.totalPlays} | ${row.rotationBackpoolPlays} | ${(row.rotationBackpoolShare * 100).toFixed(1)}% | ${row.rotationBackpoolTrackCount} | ${row.totalTracks ? ((row.tracksWithRelease / row.totalTracks) * 100).toFixed(1) : '0.0'}% | ${row.avgBackpoolAgeYears.toFixed(1)} |`
       );
     });
 
     lines.push('');
-    lines.push('## Top Backpool Tracks je Sender');
+    lines.push('## Rotation Backpool Tracks je Sender');
     lines.push('');
     rows.forEach((row) => {
       lines.push(`### ${row.stationName}`);
-      if (!row.topBackpoolTracks.length) {
-        lines.push('- Keine Backpool-Titel im gewählten Zeitraum.');
+      if (!row.rotationBackpoolTracks.length) {
+        lines.push('- Keine Rotation-Backpool-Titel im gewählten Zeitraum.');
         lines.push('');
         return;
       }
-      row.topBackpoolTracks.forEach((track, index) => {
+      row.rotationBackpoolTracks.forEach((track, index) => {
         lines.push(
-          `${index + 1}. ${track.artist} - ${track.title} | ${track.plays} Plays | Release: ${track.releaseDate} | Alter: ${track.ageYears.toFixed(1)} Jahre`
+          `${index + 1}. ${track.artist} - ${track.title} | ${track.plays} Plays | Ø/Tag: ${track.playsPerDay.toFixed(2)} | aktive Tage: ${track.activeDays} | Spannweite: ${track.spanDays} Tage | Ø Abstand: ${track.cadenceDays ? track.cadenceDays.toFixed(2) : '-'} Tage`
+        );
+      });
+      lines.push('');
+    });
+
+    lines.push('## Release-basierter Backpool (Legacy)');
+    lines.push('');
+    rows.forEach((row) => {
+      lines.push(`### ${row.stationName}`);
+      if (!row.lowRotationBackpoolTracks.length) {
+        lines.push(`- Keine Low-Rotation-Backpool-Titel (Schwelle: <= ${lowRotationMax.toFixed(2)} Plays/Tag).`);
+        lines.push('');
+        return;
+      }
+      row.lowRotationBackpoolTracks.forEach((track, index) => {
+        lines.push(
+          `${index + 1}. ${track.artist} - ${track.title} | ${track.plays} Plays | Ø/Tag: ${track.playsPerDay.toFixed(2)} | Release: ${track.releaseDate}`
         );
       });
       lines.push('');
@@ -660,14 +1005,20 @@ export async function runBackpoolAnalysis({
 
   db.close();
   logger?.info(
-      {
-        from: fromBerlin.toISODate(),
-        to: toBerlin.toISODate(),
-        cutoff: backpoolCutoff.toISODate(),
-        minReleaseConfidence: confidenceFloor,
-        stations: rows.length,
-        mdPath,
-        stationId: stationId ?? null,
+    {
+      from: fromBerlin.toISODate(),
+      to: toBerlin.toISODate(),
+      cutoff: backpoolCutoff.toISODate(),
+      minReleaseConfidence: confidenceFloor,
+      rotationMinDailyPlays: rotationMinDaily,
+      lowRotationMaxDailyPlays: lowRotationMax,
+      rotationMinActiveDays: rotationMinDays,
+      rotationMinSpanDays: rotationSpanMin,
+      rotationAdaptive: adaptiveRotation,
+      rangeDays,
+      stations: rows.length,
+      mdPath,
+      stationId: stationId ?? null,
       writeReport,
       autoEnrichMissingRelease: enrichEnabled
     },
@@ -678,6 +1029,12 @@ export async function runBackpoolAnalysis({
     to: toBerlin.toISODate(),
     cutoff: backpoolCutoff.toISODate(),
     minReleaseConfidence: confidenceFloor,
+    rotationMinDailyPlays: rotationMinDaily,
+    lowRotationMaxDailyPlays: lowRotationMax,
+    rotationMinActiveDays: rotationMinDays,
+    rotationMinSpanDays: rotationSpanMin,
+    rotationAdaptive: adaptiveRotation,
+    rangeDays,
     rows,
     mdPath
   };

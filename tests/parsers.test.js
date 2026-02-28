@@ -56,4 +56,13 @@ describe('parsers', () => {
     expect(fromGeneric.length).toBe(2);
     expect(fromGeneric[1].artistRaw).toBe('The Kid Laroi');
   });
+
+  it('parses table playlist rows with separate time/artist/title cells', () => {
+    const parser = new GenericHtmlParser({ timezone: 'Europe/Berlin' });
+    const plays = parser.parse(fixture('radio_horen_table.html'), 'https://example.test');
+    expect(plays.length).toBe(3);
+    expect(plays[0].artistRaw).toBe('Tate McRae');
+    expect(plays[0].titleRaw).toBe('Sports car');
+    expect(plays[2].artistRaw).toBe('The Weeknd, Daft Punk');
+  });
 });

@@ -114,8 +114,15 @@ program
   .option('--from <YYYY-MM-DD>', 'Start date in Europe/Berlin (default: 365 days ago)')
   .option('--to <YYYY-MM-DD>', 'End date in Europe/Berlin (default: today)')
   .option('--years <number>', 'Backpool threshold age in years', '5')
-  .option('--min-plays <number>', 'Minimum plays per track in range', '3')
+  .option('--min-plays <number>', 'Minimum plays per track in range', '1')
+  .option('--rotation-min-daily-plays <number>', 'Minimum avg plays/day for rotation backpool', '0.35')
   .option('--min-confidence <number>', 'Minimum metadata confidence (0-1) for valid release dates', '0.72')
+  .option('--low-rotation-max-daily-plays <number>', 'Max avg plays/day for low-rotation backpool list', '2')
+  .option('--rotation-min-active-days <number>', 'Minimum active days in range for rotation backpool', '5')
+  .option('--rotation-min-span-days <number>', 'Minimum first-to-last span days for rotation backpool', '28')
+  .option('--rotation-adaptive <0|1>', 'Adapt rotation thresholds to available station history (default: 1)', '1')
+  .option('--hydrate-missing-release', 'Enrich missing release metadata during analysis')
+  .option('--max-meta-lookups <number>', 'Max metadata lookups during enrichment', '120')
   .option('--top <number>', 'Top backpool tracks per station in report', '20')
   .action(async (opts) => {
     try {
@@ -126,7 +133,14 @@ program
         to: opts.to,
         years: Number(opts.years),
         minTrackPlays: Number(opts.minPlays),
+        rotationMinDailyPlays: Number(opts.rotationMinDailyPlays),
         minReleaseConfidence: Number(opts.minConfidence),
+        lowRotationMaxDailyPlays: Number(opts.lowRotationMaxDailyPlays),
+        rotationMinActiveDays: Number(opts.rotationMinActiveDays),
+        rotationMinSpanDays: Number(opts.rotationMinSpanDays),
+        rotationAdaptive: String(opts.rotationAdaptive ?? '1') !== '0',
+        autoEnrichMissingRelease: Boolean(opts.hydrateMissingRelease),
+        maxMetadataLookups: Number(opts.maxMetaLookups),
         top: Number(opts.top),
         logger
       });
@@ -142,14 +156,23 @@ program
   .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
   .option('--make-report', 'Also generate weekly report for current week')
   .option('--audit-coverage', 'Also run coverage audit for yesterday (Europe/Berlin)')
-  .action((opts) => {
+  .action(async (opts) => {
     runIngest({ configPath: opts.config, dbPath: opts.db, logger })
-      .then(() => {
+      .then(async () => {
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,
           dbPath: opts.db,
           date: berlinYesterday,
+          logger
+        });
+
+        await runBackpoolAnalysis({
+          configPath: opts.config,
+          dbPath: opts.db,
+          writeReport: false,
+          autoEnrichMissingRelease: false,
+          persistToDb: true,
           logger
         });
 
@@ -213,6 +236,14 @@ program
           configPath: opts.config,
           dbPath: opts.db,
           date: berlinYesterday,
+          logger
+        });
+        await runBackpoolAnalysis({
+          configPath: opts.config,
+          dbPath: opts.db,
+          writeReport: false,
+          autoEnrichMissingRelease: false,
+          persistToDb: true,
           logger
         });
         const weekStart = DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();

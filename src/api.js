@@ -12,7 +12,9 @@ import {
   getTrackIdentity,
   getTrackMetadata,
   getTrackStationCounts,
-  getNewTracksInWeek
+  getNewTracksInWeek,
+  listBackpoolTrackCatalog,
+  listBackpoolStationSummary
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackTotals } from './trends.js';
@@ -55,6 +57,14 @@ export function parseRange(from, to) {
 }
 
 export function createApiHandlers({ configPath, dbPath, logger }) {
+  const backpoolInFlight = new Map();
+  const backpoolCache = new Map();
+  const BACKPOOL_CACHE_TTL_MS = 20 * 1000;
+
+  function toBackpoolKey(payload) {
+    return JSON.stringify(payload);
+  }
+
   return {
     health: (_req, res) => {
       res.json({ ok: true, time: new Date().toISOString() });
@@ -63,7 +73,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     docs: (_req, res) => {
       res.json({
         name: 'JUKA Radio Playlist Analyzer API',
-        pages: ['GET /dashboard', 'GET /backpool', 'GET /tracks'],
+        pages: ['GET /dashboard', 'GET /backpool', 'GET /tracks', 'GET /new-titles'],
         endpoints: [
           'GET /api/health',
           'GET /api/docs',
@@ -77,7 +87,9 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'POST /api/tracks/:trackKey/meta/refresh',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20',
-          'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=3&top=20&minConfidence=0.72&stationId=ID&hydrate=0',
+          'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
+          'GET /api/insights/backpool/catalog?stationId=ID&classification=rotation_backpool|hot_rotation|sparse_rotation&limit=500',
+          'GET /api/insights/backpool/summary?stationId=ID',
           'POST /api/jobs/evaluate-daily {"date":"YYYY-MM-DD"}'
         ]
       });
@@ -304,33 +316,134 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     },
 
     backpool: async (req, res) => {
+      let currentKey = null;
       try {
         const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
         const from = req.query.from ? String(safeQueryValue(req.query.from)) : undefined;
         const to = req.query.to ? String(safeQueryValue(req.query.to)) : undefined;
         const rawYears = Number(safeQueryValue(req.query.years) ?? 5);
-        const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 3);
+        const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 1);
         const rawTop = Number(safeQueryValue(req.query.top) ?? 20);
+        const rawRotationMinDailyPlays = Number(safeQueryValue(req.query.rotationMinDailyPlays) ?? 0.35);
         const rawMinConfidence = Number(safeQueryValue(req.query.minConfidence) ?? 0.72);
+        const rawLowRotationMaxDailyPlays = Number(safeQueryValue(req.query.lowRotationMaxDailyPlays) ?? 2);
+        const rawRotationMinActiveDays = Number(safeQueryValue(req.query.rotationMinActiveDays) ?? 5);
+        const rawRotationMinSpanDays = Number(safeQueryValue(req.query.rotationMinSpanDays) ?? 28);
+        const rotationAdaptive = String(safeQueryValue(req.query.rotationAdaptive) ?? '1') !== '0';
         const hydrate = String(safeQueryValue(req.query.hydrate) ?? '0') !== '0';
         const rawMaxMetaLookups = Number(safeQueryValue(req.query.maxMetaLookups) ?? 80);
+        const maxLookupsRequested = Number.isFinite(rawMaxMetaLookups) ? Math.max(0, Math.min(rawMaxMetaLookups, 400)) : 80;
+        const effectiveMaxMetaLookups = hydrate
+          ? stationId
+            ? maxLookupsRequested
+            : Math.min(maxLookupsRequested, 40)
+          : 0;
+        const payload = {
+          from: from ?? null,
+          to: to ?? null,
+          years: Number.isFinite(rawYears) ? Math.max(1, Math.min(rawYears, 40)) : 5,
+          minTrackPlays: Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 500)) : 1,
+          top: Number.isFinite(rawTop) ? Math.max(1, Math.min(rawTop, 1000)) : 20,
+          rotationMinDailyPlays: Number.isFinite(rawRotationMinDailyPlays)
+            ? Math.max(0.01, Math.min(rawRotationMinDailyPlays, 24))
+            : 0.35,
+          minReleaseConfidence: Number.isFinite(rawMinConfidence) ? Math.max(0, Math.min(rawMinConfidence, 1)) : 0.72,
+          lowRotationMaxDailyPlays: Number.isFinite(rawLowRotationMaxDailyPlays)
+            ? Math.max(0.1, Math.min(rawLowRotationMaxDailyPlays, 24))
+            : 2,
+          rotationMinActiveDays: Number.isFinite(rawRotationMinActiveDays)
+            ? Math.max(1, Math.min(rawRotationMinActiveDays, 366))
+            : 5,
+          rotationMinSpanDays: Number.isFinite(rawRotationMinSpanDays)
+            ? Math.max(1, Math.min(rawRotationMinSpanDays, 366))
+            : 28,
+          rotationAdaptive,
+          stationId: stationId ?? null,
+          autoEnrichMissingRelease: hydrate,
+          maxMetadataLookups: effectiveMaxMetaLookups
+        };
+        const key = toBackpoolKey(payload);
+        currentKey = key;
+        const now = Date.now();
+        const cached = backpoolCache.get(key);
+        if (cached && now < cached.expiresAtMs) {
+          return res.json(cached.result);
+        }
+        if (backpoolInFlight.has(key)) {
+          const result = await backpoolInFlight.get(key);
+          return res.json(result);
+        }
 
-        const result = await runBackpoolAnalysis({
+        const runPromise = runBackpoolAnalysis({
           configPath,
           dbPath,
           from,
           to,
-          years: Number.isFinite(rawYears) ? Math.max(1, Math.min(rawYears, 40)) : 5,
-          minTrackPlays: Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 500)) : 3,
-          top: Number.isFinite(rawTop) ? Math.max(1, Math.min(rawTop, 100)) : 20,
-          minReleaseConfidence: Number.isFinite(rawMinConfidence) ? Math.max(0, Math.min(rawMinConfidence, 1)) : 0.72,
+          years: payload.years,
+          minTrackPlays: payload.minTrackPlays,
+          top: payload.top,
+          rotationMinDailyPlays: payload.rotationMinDailyPlays,
+          minReleaseConfidence: payload.minReleaseConfidence,
+          lowRotationMaxDailyPlays: payload.lowRotationMaxDailyPlays,
+          rotationMinActiveDays: payload.rotationMinActiveDays,
+          rotationMinSpanDays: payload.rotationMinSpanDays,
+          rotationAdaptive: payload.rotationAdaptive,
           stationId,
           writeReport: false,
           autoEnrichMissingRelease: hydrate,
-          maxMetadataLookups: Number.isFinite(rawMaxMetaLookups) ? Math.max(0, Math.min(rawMaxMetaLookups, 400)) : 80,
+          persistToDb: false,
+          maxMetadataLookups: effectiveMaxMetaLookups,
           logger
         });
+        backpoolInFlight.set(key, runPromise);
+        const result = await runPromise;
+        backpoolInFlight.delete(key);
+        backpoolCache.set(key, { expiresAtMs: Date.now() + BACKPOOL_CACHE_TTL_MS, result });
         return res.json(result);
+      } catch (error) {
+        if (currentKey && backpoolInFlight.has(currentKey)) {
+          backpoolInFlight.delete(currentKey);
+        }
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    backpoolCatalog: (req, res) => {
+      try {
+        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
+        const classification = req.query.classification ? String(safeQueryValue(req.query.classification)) : undefined;
+        const rawLimit = Number(safeQueryValue(req.query.limit) ?? 500);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 2000)) : 500;
+
+        const db = openDb(dbPath);
+        try {
+          const rows = listBackpoolTrackCatalog(db, { stationId, classification, limit });
+          return res.json({
+            stationId: stationId ?? null,
+            classification: classification ?? null,
+            rows
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    backpoolSummary: (req, res) => {
+      try {
+        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
+        const db = openDb(dbPath);
+        try {
+          const data = listBackpoolStationSummary(db, { stationId });
+          return res.json({
+            stationId: stationId ?? null,
+            rows: Array.isArray(data) ? data : data ? [data] : []
+          });
+        } finally {
+          db.close();
+        }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -437,6 +550,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/dashboard', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
   app.get('/backpool', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'backpool.html')));
   app.get('/tracks', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'tracks.html')));
+  app.get('/new-titles', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'new-titles.html')));
 
   app.get('/api/health', handlers.health);
   app.get('/api/docs', handlers.docs);
@@ -451,6 +565,8 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
   app.get('/api/insights/backpool', handlers.backpool);
+  app.get('/api/insights/backpool/catalog', handlers.backpoolCatalog);
+  app.get('/api/insights/backpool/summary', handlers.backpoolSummary);
   app.post('/api/jobs/evaluate-daily', handlers.evaluateDaily);
 
   return app;
@@ -499,6 +615,14 @@ export async function startApiServer({ configPath, dbPath, port = 8787, schedule
           await runIngest({ configPath, dbPath, logger });
           const date = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
           runDailyEvaluation({ configPath, dbPath, date, logger });
+          await runBackpoolAnalysis({
+            configPath,
+            dbPath,
+            writeReport: false,
+            autoEnrichMissingRelease: false,
+            persistToDb: true,
+            logger
+          });
         } catch (err) {
           logger.error({ err: err instanceof Error ? err.message : String(err) }, 'daily scheduled job failed');
         } finally {

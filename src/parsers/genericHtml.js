@@ -116,15 +116,30 @@ export class GenericHtmlParser extends BaseParser {
         element.find('.time, .timestamp, .playlist-time, .uhrzeit').first().text().trim() ||
         extractTime(text);
 
-      const parsedTime = parsePlayedAt(timeText, this.timezone);
-      if (!parsedTime) continue;
-
       const explicitArtist = element.find('.artist').first().text().trim();
       const explicitTitle = element.find('.title, .song-title, .track-title').first().text().trim();
+      const tableCells = element
+        .find('td')
+        .toArray()
+        .map((cell) => $(cell).text().replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+
+      const tableTime = tableCells.length >= 1 ? parsePlayedAt(tableCells[0], this.timezone) : null;
+      const parsedTime = tableTime || parsePlayedAt(timeText, this.timezone);
+      if (!parsedTime) continue;
 
       let artistTitle = null;
       if (explicitArtist && explicitTitle) {
         artistTitle = { artistRaw: explicitArtist, titleRaw: explicitTitle };
+      } else if (tableCells.length >= 3) {
+        // Common "Zeit | Artist | Titel" playlist tables.
+        artistTitle = {
+          artistRaw: cleanContent(tableCells[1]),
+          titleRaw: cleanContent(tableCells.slice(2).join(' - '))
+        };
+        if (!artistTitle.artistRaw || !artistTitle.titleRaw || INVALID_TRACK_FRAGMENT.test(`${artistTitle.artistRaw} ${artistTitle.titleRaw}`)) {
+          artistTitle = null;
+        }
       } else {
         artistTitle = splitArtistTitle(cleanContent(text.replace(timeText || '', '').trim()));
       }

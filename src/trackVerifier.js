@@ -4,7 +4,31 @@ import { getTrackMetadata, upsertTrackMetadata } from './db.js';
 
 const CHART_FEED_CACHE_MS = 30 * 60 * 1000;
 const CHART_FEED_BACKOFF_MS = 15 * 60 * 1000;
+const ITUNES_BACKOFF_SOFT_MS = 10 * 60 * 1000;
+const ITUNES_BACKOFF_HARD_MS = 30 * 60 * 1000;
+const ITUNES_ERROR_RETRY_MS = 12 * 60 * 60 * 1000;
+const METADATA_RECENT_CACHE_MS = 6 * 60 * 60 * 1000;
 const chartFeedStateByCountry = new Map();
+const itunesState = {
+  retryAfterMs: 0,
+  reason: null
+};
+
+function parseTimeMs(value) {
+  if (!value) return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isRecentCache(cached, maxAgeMs) {
+  const checkedAtMs = parseTimeMs(cached?.last_checked_utc);
+  if (!checkedAtMs) return false;
+  return (Date.now() - checkedAtMs) < maxAgeMs;
+}
+
+function shouldSkipRetryAfterError(cached) {
+  return cached?.verification_source === 'itunes_error' && isRecentCache(cached, ITUNES_ERROR_RETRY_MS);
+}
 
 function tokenize(value) {
   return String(value ?? '')
@@ -52,13 +76,30 @@ function toDbRow(track, result) {
 }
 
 async function verifyWithItunes(track) {
+  const now = Date.now();
+  if (itunesState.retryAfterMs > now) {
+    throw new Error(
+      `iTunes verify temporarily unavailable until ${new Date(itunesState.retryAfterMs).toISOString()} (${itunesState.reason ?? 'backoff'})`
+    );
+  }
+
   const term = encodeURIComponent(`${track.artist} ${track.title}`);
   const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=5&country=DE`;
   const res = await fetch(url, {
     headers: { 'user-agent': 'yrpa/1.0 (+track-verifier)' },
     signal: AbortSignal.timeout(10000)
   });
-  if (!res.ok) throw new Error(`iTunes verify failed: HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 429 || res.status === 403 || res.status === 503) {
+      const backoffMs = res.status === 403 ? ITUNES_BACKOFF_HARD_MS : ITUNES_BACKOFF_SOFT_MS;
+      itunesState.retryAfterMs = now + backoffMs;
+      itunesState.reason = `HTTP ${res.status}`;
+      throw new Error(`iTunes verify failed: HTTP ${res.status} (backoff ${Math.round(backoffMs / 60000)}m)`);
+    }
+    throw new Error(`iTunes verify failed: HTTP ${res.status}`);
+  }
+  itunesState.retryAfterMs = 0;
+  itunesState.reason = null;
 
   const json = await res.json();
   const results = Array.isArray(json?.results) ? json.results : [];
@@ -244,6 +285,22 @@ export class TrackVerifier {
         fromCache: true
       };
     }
+    if (cached && shouldSkipRetryAfterError(cached)) {
+      return {
+        verifiedExists: null,
+        confidence: cached.verification_confidence ?? null,
+        source: cached.verification_source ?? 'cache',
+        fromCache: true
+      };
+    }
+    if (cached && cached.verified_exists === null && isRecentCache(cached, METADATA_RECENT_CACHE_MS)) {
+      return {
+        verifiedExists: null,
+        confidence: cached.verification_confidence ?? null,
+        source: cached.verification_source ?? 'cache',
+        fromCache: true
+      };
+    }
 
     try {
       const result = await verifyWithItunes(track);
@@ -262,9 +319,15 @@ export class TrackVerifier {
     }
   }
 
-  async enrichMetadata(track, { forceRefresh = false } = {}) {
+  async enrichMetadata(track, { forceRefresh = false, includeChart = true, quietErrors = false } = {}) {
     const cached = getTrackMetadata(this.db, track.trackKey);
-    if (!forceRefresh && cached) {
+    const hasUsefulCachedMetadata = Boolean(
+      cached?.release_date_utc || cached?.external_track_id || cached?.genre || cached?.album || cached?.artwork_url
+    );
+    if (!forceRefresh && cached && hasUsefulCachedMetadata && isRecentCache(cached, METADATA_RECENT_CACHE_MS)) {
+      return { metadata: cached, fromCache: true };
+    }
+    if (!forceRefresh && cached && shouldSkipRetryAfterError(cached)) {
       return { metadata: cached, fromCache: true };
     }
 
@@ -273,21 +336,40 @@ export class TrackVerifier {
       result = await verifyWithItunes(track);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger?.warn({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'metadata refresh failed');
-      if (cached) return { metadata: cached, fromCache: true };
-      throw error;
+      if (!quietErrors) {
+        this.logger?.warn({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'metadata refresh failed');
+      }
+      upsertTrackMetadata(this.db, toDbRow(track, {
+        verifiedExists: cached?.verified_exists === null || cached?.verified_exists === undefined
+          ? null
+          : Boolean(cached.verified_exists),
+        confidence: cached?.verification_confidence ?? null,
+        source: 'itunes_error',
+        externalTrackId: cached?.external_track_id ?? null,
+        externalUrl: cached?.external_url ?? null,
+        artworkUrl: cached?.artwork_url ?? null,
+        releaseDateUtc: cached?.release_date_utc ?? null,
+        genre: cached?.genre ?? null,
+        album: cached?.album ?? null,
+        payloadJson: JSON.stringify({ error: message })
+      }));
+      return { metadata: getTrackMetadata(this.db, track.trackKey), fromCache: false };
     }
 
     let chart = null;
-    try {
-      const chartResult = await fetchAppleMusicChartRank(track, 'de');
-      chart = chartResult.chart;
-      if (chartResult.feedIssue && chartResult.shouldWarn) {
-        this.logger?.warn({ country: 'DE', error: chartResult.feedIssue }, 'chart feed unavailable; skipping chart rank enrichment temporarily');
+    if (includeChart) {
+      try {
+        const chartResult = await fetchAppleMusicChartRank(track, 'de');
+        chart = chartResult.chart;
+        if (chartResult.feedIssue && chartResult.shouldWarn) {
+          this.logger?.warn({ country: 'DE', error: chartResult.feedIssue }, 'chart feed unavailable; skipping chart rank enrichment temporarily');
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!quietErrors) {
+          this.logger?.warn({ error: message }, 'chart rank lookup failed');
+        }
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger?.warn({ error: message }, 'chart rank lookup failed');
     }
 
     const merged = mergeMetadataResult(result, chart, 'itunes');

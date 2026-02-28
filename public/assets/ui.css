@@ -102,6 +102,81 @@ body {
   font-size: 0.83rem;
 }
 
+.backpool-advanced {
+  border: 1px dashed var(--bs-border-color);
+  border-radius: 0.65rem;
+  padding: 0.6rem 0.7rem;
+  background: var(--bs-body-bg);
+}
+
+.backpool-advanced summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--bs-secondary-color);
+  font-weight: 600;
+}
+
+.backpool-pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 0.6rem;
+}
+
+.backpool-pattern-item {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.6rem;
+  padding: 0.55rem 0.6rem;
+  background: color-mix(in srgb, var(--bs-body-bg) 92%, var(--bs-primary-bg-subtle) 8%);
+}
+
+.backpool-pattern-item div {
+  color: var(--bs-secondary-color);
+  font-size: 0.84rem;
+}
+
+.backpool-pattern-item strong {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 1.05rem;
+  line-height: 1.2;
+}
+
+.backpool-pattern-item small {
+  color: var(--bs-secondary-color);
+  font-size: 0.78rem;
+}
+
+.backpool-pattern-text {
+  margin: 0 0 0.7rem 0;
+  color: var(--bs-secondary-color);
+  font-size: 0.9rem;
+}
+
+.new-title-spotlights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.8rem;
+}
+
+.new-title-card {
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.75rem;
+  padding: 0.8rem;
+  background: var(--bs-body-bg);
+}
+
+.new-title-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.55rem;
+}
+
+.new-title-badge .badge {
+  font-size: 0.82rem;
+}
+
 .stack {
   display: grid;
   gap: 0.6rem;

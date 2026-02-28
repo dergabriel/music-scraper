@@ -102,6 +102,9 @@ export function getStationTrackCountsWithMetadata(db, stationId, startUtcIso, en
       min(p.artist) as artist,
       min(p.title) as title,
       count(*) as count,
+      count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+      min(p.played_at_utc) as first_played_at_utc,
+      max(p.played_at_utc) as last_played_at_utc,
       min(m.release_date_utc) as release_date_utc,
       min(m.verification_confidence) as verification_confidence,
       min(m.verified_exists) as verified_exists,
@@ -506,4 +509,225 @@ export function dedupeStationToOnePlayPerMinute(db, stationId) {
   `).run(stationId, stationId);
   const after = db.prepare('select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
   return { before, after, removed: Math.max(0, before - after) };
+}
+
+export function upsertBackpoolStationSummary(db, row) {
+  db.prepare(`
+    insert into backpool_station_summary(
+      station_id,
+      station_name,
+      analysis_from_berlin,
+      analysis_to_berlin,
+      analyzed_at_utc,
+      range_days,
+      observed_coverage_days,
+      observed_span_days,
+      total_plays,
+      total_tracks,
+      tracks_with_release,
+      unvalidated_release_count,
+      rotation_min_daily_plays,
+      rotation_max_daily_plays,
+      rotation_min_active_days,
+      rotation_min_span_days,
+      rotation_backpool_track_count,
+      rotation_backpool_plays,
+      rotation_backpool_share,
+      hot_rotation_track_count,
+      sparse_rotation_track_count,
+      release_backpool_track_count,
+      release_backpool_plays,
+      release_backpool_share
+    ) values (
+      @station_id,
+      @station_name,
+      @analysis_from_berlin,
+      @analysis_to_berlin,
+      @analyzed_at_utc,
+      @range_days,
+      @observed_coverage_days,
+      @observed_span_days,
+      @total_plays,
+      @total_tracks,
+      @tracks_with_release,
+      @unvalidated_release_count,
+      @rotation_min_daily_plays,
+      @rotation_max_daily_plays,
+      @rotation_min_active_days,
+      @rotation_min_span_days,
+      @rotation_backpool_track_count,
+      @rotation_backpool_plays,
+      @rotation_backpool_share,
+      @hot_rotation_track_count,
+      @sparse_rotation_track_count,
+      @release_backpool_track_count,
+      @release_backpool_plays,
+      @release_backpool_share
+    )
+    on conflict(station_id) do update set
+      station_name = excluded.station_name,
+      analysis_from_berlin = excluded.analysis_from_berlin,
+      analysis_to_berlin = excluded.analysis_to_berlin,
+      analyzed_at_utc = excluded.analyzed_at_utc,
+      range_days = excluded.range_days,
+      observed_coverage_days = excluded.observed_coverage_days,
+      observed_span_days = excluded.observed_span_days,
+      total_plays = excluded.total_plays,
+      total_tracks = excluded.total_tracks,
+      tracks_with_release = excluded.tracks_with_release,
+      unvalidated_release_count = excluded.unvalidated_release_count,
+      rotation_min_daily_plays = excluded.rotation_min_daily_plays,
+      rotation_max_daily_plays = excluded.rotation_max_daily_plays,
+      rotation_min_active_days = excluded.rotation_min_active_days,
+      rotation_min_span_days = excluded.rotation_min_span_days,
+      rotation_backpool_track_count = excluded.rotation_backpool_track_count,
+      rotation_backpool_plays = excluded.rotation_backpool_plays,
+      rotation_backpool_share = excluded.rotation_backpool_share,
+      hot_rotation_track_count = excluded.hot_rotation_track_count,
+      sparse_rotation_track_count = excluded.sparse_rotation_track_count,
+      release_backpool_track_count = excluded.release_backpool_track_count,
+      release_backpool_plays = excluded.release_backpool_plays,
+      release_backpool_share = excluded.release_backpool_share
+  `).run(row);
+}
+
+export function clearBackpoolTrackCatalogForStation(db, stationId) {
+  db.prepare('delete from backpool_track_catalog where station_id = ?').run(stationId);
+}
+
+export function upsertBackpoolTrackCatalogRow(db, row) {
+  db.prepare(`
+    insert into backpool_track_catalog(
+      station_id,
+      track_key,
+      station_name,
+      artist,
+      title,
+      classification,
+      analysis_from_berlin,
+      analysis_to_berlin,
+      analyzed_at_utc,
+      range_days,
+      plays,
+      plays_per_day,
+      active_days,
+      span_days,
+      cadence_days,
+      first_played_at_utc,
+      last_played_at_utc,
+      release_date_utc,
+      verified_exists,
+      verification_confidence,
+      metadata_issue,
+      is_rotation_backpool,
+      is_release_backpool,
+      is_low_rotation_release_backpool
+    ) values (
+      @station_id,
+      @track_key,
+      @station_name,
+      @artist,
+      @title,
+      @classification,
+      @analysis_from_berlin,
+      @analysis_to_berlin,
+      @analyzed_at_utc,
+      @range_days,
+      @plays,
+      @plays_per_day,
+      @active_days,
+      @span_days,
+      @cadence_days,
+      @first_played_at_utc,
+      @last_played_at_utc,
+      @release_date_utc,
+      @verified_exists,
+      @verification_confidence,
+      @metadata_issue,
+      @is_rotation_backpool,
+      @is_release_backpool,
+      @is_low_rotation_release_backpool
+    )
+    on conflict(station_id, track_key) do update set
+      station_name = excluded.station_name,
+      artist = excluded.artist,
+      title = excluded.title,
+      classification = excluded.classification,
+      analysis_from_berlin = excluded.analysis_from_berlin,
+      analysis_to_berlin = excluded.analysis_to_berlin,
+      analyzed_at_utc = excluded.analyzed_at_utc,
+      range_days = excluded.range_days,
+      plays = excluded.plays,
+      plays_per_day = excluded.plays_per_day,
+      active_days = excluded.active_days,
+      span_days = excluded.span_days,
+      cadence_days = excluded.cadence_days,
+      first_played_at_utc = excluded.first_played_at_utc,
+      last_played_at_utc = excluded.last_played_at_utc,
+      release_date_utc = excluded.release_date_utc,
+      verified_exists = excluded.verified_exists,
+      verification_confidence = excluded.verification_confidence,
+      metadata_issue = excluded.metadata_issue,
+      is_rotation_backpool = excluded.is_rotation_backpool,
+      is_release_backpool = excluded.is_release_backpool,
+      is_low_rotation_release_backpool = excluded.is_low_rotation_release_backpool
+  `).run(row);
+}
+
+export function listBackpoolTrackCatalog(db, { stationId, classification, limit = 500 } = {}) {
+  const parsedLimit = Math.max(1, Math.min(Number(limit) || 500, 2000));
+
+  if (stationId && classification) {
+    return db.prepare(`
+      select *
+      from backpool_track_catalog
+      where station_id = ?
+        and classification = ?
+      order by plays desc, artist asc, title asc
+      limit ?
+    `).all(stationId, classification, parsedLimit);
+  }
+
+  if (stationId) {
+    return db.prepare(`
+      select *
+      from backpool_track_catalog
+      where station_id = ?
+      order by plays desc, artist asc, title asc
+      limit ?
+    `).all(stationId, parsedLimit);
+  }
+
+  if (classification) {
+    return db.prepare(`
+      select *
+      from backpool_track_catalog
+      where classification = ?
+      order by plays desc, artist asc, title asc
+      limit ?
+    `).all(classification, parsedLimit);
+  }
+
+  return db.prepare(`
+    select *
+    from backpool_track_catalog
+    order by plays desc, artist asc, title asc
+    limit ?
+  `).all(parsedLimit);
+}
+
+export function listBackpoolStationSummary(db, { stationId } = {}) {
+  if (stationId) {
+    return db.prepare(`
+      select *
+      from backpool_station_summary
+      where station_id = ?
+    `).get(stationId);
+  }
+
+  return db.prepare(`
+    select *
+    from backpool_station_summary
+    order by station_name asc
+  `).all();
 }
