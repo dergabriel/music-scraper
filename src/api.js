@@ -87,7 +87,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'POST /api/tracks/:trackKey/meta/refresh',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20',
-          'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
+          'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationMinReleaseAgeDays=1095&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
           'GET /api/insights/backpool/catalog?stationId=ID&classification=rotation_backpool|hot_rotation|sparse_rotation&limit=500',
           'GET /api/insights/backpool/summary?stationId=ID',
           'POST /api/jobs/evaluate-daily {"date":"YYYY-MM-DD"}'
@@ -329,6 +329,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const rawLowRotationMaxDailyPlays = Number(safeQueryValue(req.query.lowRotationMaxDailyPlays) ?? 2);
         const rawRotationMinActiveDays = Number(safeQueryValue(req.query.rotationMinActiveDays) ?? 5);
         const rawRotationMinSpanDays = Number(safeQueryValue(req.query.rotationMinSpanDays) ?? 28);
+        const rawRotationMinReleaseAgeDays = Number(safeQueryValue(req.query.rotationMinReleaseAgeDays) ?? 1095);
         const rawMinTrackAgeDays = Number(safeQueryValue(req.query.minTrackAgeDays) ?? 30);
         const rotationAdaptive = String(safeQueryValue(req.query.rotationAdaptive) ?? '1') !== '0';
         const hydrate = String(safeQueryValue(req.query.hydrate) ?? '0') !== '0';
@@ -358,6 +359,9 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           rotationMinSpanDays: Number.isFinite(rawRotationMinSpanDays)
             ? Math.max(1, Math.min(rawRotationMinSpanDays, 366))
             : 28,
+          rotationMinReleaseAgeDays: Number.isFinite(rawRotationMinReleaseAgeDays)
+            ? Math.max(0, Math.min(rawRotationMinReleaseAgeDays, 3660))
+            : 1095,
           minTrackAgeDays: Number.isFinite(rawMinTrackAgeDays)
             ? Math.max(1, Math.min(rawMinTrackAgeDays, 3660))
             : 30,
@@ -391,6 +395,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           lowRotationMaxDailyPlays: payload.lowRotationMaxDailyPlays,
           rotationMinActiveDays: payload.rotationMinActiveDays,
           rotationMinSpanDays: payload.rotationMinSpanDays,
+          rotationMinReleaseAgeDays: payload.rotationMinReleaseAgeDays,
           minTrackAgeDays: payload.minTrackAgeDays,
           rotationAdaptive: payload.rotationAdaptive,
           stationId,

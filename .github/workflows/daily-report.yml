@@ -1,0 +1,60 @@
+name: Daily Evaluation And Report
+
+on:
+  schedule:
+    - cron: "20 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Ensure data directory
+        run: mkdir -p data
+
+      - name: Restore SQLite cache
+        id: restore-db
+        uses: actions/cache/restore@v4
+        with:
+          path: data/yrpa.sqlite
+          key: juka-db-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            juka-db-${{ runner.os }}-${{ github.ref_name }}-
+
+      - name: Run daily job
+        run: |
+          node src/cli.js daily-job \
+            --config config.yaml \
+            --db data/yrpa.sqlite \
+            --make-report \
+            --audit-coverage
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: juka-reports-${{ github.run_id }}
+          path: reports
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Save SQLite cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/yrpa.sqlite
+          key: ${{ steps.restore-db.outputs.cache-primary-key }}

@@ -830,6 +830,7 @@ export async function runBackpoolAnalysis({
   rotationMinActiveDays = 5,
   rotationMinSpanDays = 28,
   minTrackAgeDays = 30,
+  rotationMinReleaseAgeDays = 1095,
   rotationAdaptive = true,
   persistToDb = true,
   logger
@@ -854,6 +855,7 @@ export async function runBackpoolAnalysis({
   const rotationMinDays = Math.max(1, Math.floor(Number(rotationMinActiveDays) || 5));
   const rotationSpanMin = Math.max(1, Math.floor(Number(rotationMinSpanDays) || 28));
   const trackAgeMin = Math.max(1, Math.floor(Number(minTrackAgeDays) || 30));
+  const releaseAgeMin = Math.max(0, Math.floor(Number(rotationMinReleaseAgeDays) || 1095));
   const adaptiveRotation = rotationAdaptive !== false;
   const rangeDays = Math.max(1, Math.floor(toBerlin.diff(fromBerlin, 'days').days) + 1);
 
@@ -863,6 +865,67 @@ export async function runBackpoolAnalysis({
   if (stationId && selectedStations.length === 0) {
     db.close();
     throw new Error(`Unknown station id: ${stationId}`);
+  }
+  const selectedStationIds = selectedStations.map((station) => station.id);
+  const crossStationTrendSignals = new Map();
+  const crossStationTrendStationShareMin = 0.3;
+  const crossStationRecentWindowDays = Math.max(7, Math.min(30, rangeDays));
+  const crossStationRecentStartUtcIso = toBerlin
+    .plus({ days: 1 })
+    .minus({ days: crossStationRecentWindowDays })
+    .toUTC()
+    .toISO();
+
+  if (selectedStationIds.length > 1) {
+    const stationPlaceholders = selectedStationIds.map(() => '?').join(', ');
+    const globalRows = db.prepare(`
+      select p.track_key as track_key
+      , count(*) as plays
+      , sum(case when p.played_at_utc >= ? then 1 else 0 end) as recent_plays
+      , count(distinct p.station_id) as station_count
+      from plays p
+      where p.station_id in (${stationPlaceholders})
+        and p.played_at_utc >= ?
+        and p.played_at_utc < ?
+      group by p.track_key
+    `).all(
+      crossStationRecentStartUtcIso,
+      ...selectedStationIds,
+      rangeStartUtcIso,
+      rangeEndUtcIso
+    );
+
+    const minStationsForTrend = Math.max(2, Math.ceil(selectedStationIds.length * crossStationTrendStationShareMin));
+    const crossStationRecentDailyFloor = Math.max(0.45, rotationMinDaily * 1.2);
+    const crossStationMomentumFactor = 1.35;
+    for (const row of globalRows) {
+      const plays = Number(row.plays || 0);
+      const recentPlays = Number(row.recent_plays || 0);
+      const stationCount = Number(row.station_count || 0);
+      const stationShare = selectedStationIds.length > 0 ? stationCount / selectedStationIds.length : 0;
+      const playsPerDay = plays / rangeDays;
+      const recentPlaysPerDay = recentPlays / crossStationRecentWindowDays;
+      const recentShare = plays > 0 ? recentPlays / plays : 0;
+
+      const isCrossStationTrend =
+        plays >= Math.max(4, Number(minTrackPlays || 1)) &&
+        stationCount >= minStationsForTrend &&
+        stationShare >= crossStationTrendStationShareMin &&
+        recentPlays >= 4 &&
+        recentShare >= 0.55 &&
+        recentPlaysPerDay >= crossStationRecentDailyFloor &&
+        recentPlaysPerDay >= (playsPerDay * crossStationMomentumFactor);
+
+      if (isCrossStationTrend) {
+        crossStationTrendSignals.set(row.track_key, {
+          stationCount,
+          stationShare,
+          recentPlays,
+          recentShare,
+          recentPlaysPerDay
+        });
+      }
+    }
   }
 
   const enrichEnabled = Boolean(autoEnrichMissingRelease) && process.env.NODE_ENV !== 'test';
@@ -972,6 +1035,21 @@ export async function runBackpoolAnalysis({
     const effectiveTrackAgeMin = adaptiveRotation
       ? Math.max(1, Math.min(trackAgeMin, Math.floor(Math.max(1, rateBasisDays * 0.5))))
       : trackAgeMin;
+    const effectiveReleaseAgeMin = releaseAgeMin;
+    const recentWindowDays = Math.max(7, Math.min(30, rateBasisDays));
+    const recentStartUtcIso = toBerlin.plus({ days: 1 }).minus({ days: recentWindowDays }).toUTC().toISO();
+    const recentPlaysByTrack = new Map(
+      db.prepare(`
+        select track_key, count(*) as recent_plays
+        from plays
+        where station_id = ?
+          and played_at_utc >= ?
+          and played_at_utc < ?
+        group by track_key
+      `).all(station.id, recentStartUtcIso, rangeEndUtcIso).map((row) => [row.track_key, Number(row.recent_plays || 0)])
+    );
+    const resurgenceMinRecentDaily = Math.max(0.6, rotationMinDaily * 2);
+    const resurgenceFactor = 1.8;
     const minActiveFromCadence = Math.max(1, Math.ceil(effectiveRotationSpanMin * rotationMinDaily));
     const effectiveRotationActiveMin = adaptiveRotation
       ? Math.min(rotationMinDays, minActiveFromCadence)
@@ -996,6 +1074,18 @@ export async function runBackpoolAnalysis({
         firstPlayed && firstPlayed.isValid
           ? Math.max(1, Math.floor(toBerlin.startOf('day').diff(firstPlayed.startOf('day'), 'days').days) + 1)
           : 0;
+      const releaseAgeDays =
+        release && release.isValid
+          ? Math.max(0, Math.floor(toBerlin.startOf('day').diff(release.startOf('day'), 'days').days))
+          : null;
+      const recentPlays = Number(recentPlaysByTrack.get(row.track_key) || 0);
+      const recentPlaysPerDay = recentPlays / recentWindowDays;
+      const isStationResurgence =
+        recentPlays >= 4 &&
+        recentPlaysPerDay >= resurgenceMinRecentDaily &&
+        recentPlaysPerDay >= (playsPerDay * resurgenceFactor);
+      const crossStationSignal = crossStationTrendSignals.get(row.track_key) ?? null;
+      const isRecentResurgence = isStationResurgence || Boolean(crossStationSignal);
 
       let metadataIssue = null;
       if (!row.release_date_utc) {
@@ -1023,6 +1113,15 @@ export async function runBackpoolAnalysis({
         activeDays,
         playsPerDay,
         stationAgeDays,
+        releaseAgeDays,
+        recentPlays,
+        recentPlaysPerDay,
+        crossStationTrendStationCount: Number(crossStationSignal?.stationCount || 0),
+        crossStationTrendStationShare: Number(crossStationSignal?.stationShare || 0),
+        crossStationTrendRecentShare: Number(crossStationSignal?.recentShare || 0),
+        crossStationTrendRecentPlays: Number(crossStationSignal?.recentPlays || 0),
+        crossStationTrendRecentPlaysPerDay: Number(crossStationSignal?.recentPlaysPerDay || 0),
+        isRecentResurgence,
         spanDays,
         cadenceDays
       };
@@ -1031,10 +1130,14 @@ export async function runBackpoolAnalysis({
     const withRelease = classifiedRows.filter((row) => row.hasValidatedRelease);
     const rotationBackpoolTracks = classifiedRows
       .filter((row) => (
+        row.hasValidatedRelease &&
         row.plays >= Number(minTrackPlays || 1) &&
         row.playsPerDay >= rotationMinDaily &&
         row.playsPerDay <= lowRotationMax &&
         row.stationAgeDays >= effectiveTrackAgeMin &&
+        row.releaseAgeDays !== null &&
+        row.releaseAgeDays >= effectiveReleaseAgeMin &&
+        !row.isRecentResurgence &&
         row.activeDays >= effectiveRotationActiveMin &&
         row.spanDays >= effectiveRotationSpanMin
       ))
@@ -1044,18 +1147,28 @@ export async function runBackpoolAnalysis({
         return Number(b.plays || 0) - Number(a.plays || 0);
       });
     const hotRotationTracks = classifiedRows
-      .filter((row) => row.playsPerDay > lowRotationMax)
+      .filter((row) => !row.isRecentResurgence && row.playsPerDay > lowRotationMax)
       .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
     const sparseRotationTracks = classifiedRows
       .filter((row) => (
-        row.plays < Number(minTrackPlays || 1) ||
-        row.playsPerDay < rotationMinDaily ||
-        row.activeDays < rotationMinDays ||
-        row.spanDays < rotationSpanMin
+        !row.isRecentResurgence &&
+        (
+          row.plays < Number(minTrackPlays || 1) ||
+          row.playsPerDay < rotationMinDaily ||
+          row.activeDays < effectiveRotationActiveMin ||
+          row.spanDays < effectiveRotationSpanMin
+        )
       ))
       .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
+    const resurgenceTracks = classifiedRows
+      .filter((row) => row.isRecentResurgence)
+      .sort((a, b) => Number(b.recentPlaysPerDay || 0) - Number(a.recentPlaysPerDay || 0));
     const recentTracks = classifiedRows
-      .filter((row) => row.stationAgeDays > 0 && row.stationAgeDays < effectiveTrackAgeMin)
+      .filter((row) => (
+        (row.stationAgeDays > 0 && row.stationAgeDays < effectiveTrackAgeMin) ||
+        row.releaseAgeDays === null ||
+        (row.releaseAgeDays !== null && row.releaseAgeDays < effectiveReleaseAgeMin)
+      ))
       .sort((a, b) => Number(b.plays || 0) - Number(a.plays || 0));
 
     const backpoolTracks = withRelease
@@ -1105,6 +1218,14 @@ export async function runBackpoolAnalysis({
       playsPerDay: Number(row.playsPerDay || 0),
       activeDays: Number(row.activeDays || 0),
       stationAgeDays: Number(row.stationAgeDays || 0),
+      releaseAgeDays: Number.isFinite(row.releaseAgeDays) ? Number(row.releaseAgeDays) : null,
+      recentPlays: Number(row.recentPlays || 0),
+      recentPlaysPerDay: Number(row.recentPlaysPerDay || 0),
+      globalTrendStationCount: Number(row.crossStationTrendStationCount || 0),
+      globalTrendStationShare: Number(row.crossStationTrendStationShare || 0),
+      globalTrendRecentShare: Number(row.crossStationTrendRecentShare || 0),
+      globalTrendRecentPlays: Number(row.crossStationTrendRecentPlays || 0),
+      globalTrendRecentPlaysPerDay: Number(row.crossStationTrendRecentPlaysPerDay || 0),
       spanDays: Number(row.spanDays || 0),
       cadenceDays: Number.isFinite(row.cadenceDays) ? row.cadenceDays : null,
       firstPlayedDate: row.firstPlayed?.isValid ? row.firstPlayed.toISODate() : null,
@@ -1300,13 +1421,16 @@ export async function runBackpoolAnalysis({
       lowRotationMaxDailyPlays: lowRotationMax,
       rotationMinActiveDays: rotationMinDays,
       rotationMinSpanDays: rotationSpanMin,
+      rotationMinReleaseAgeDays: releaseAgeMin,
       minTrackAgeDays: trackAgeMin,
       rotationAdaptive: adaptiveRotation,
       rotationWarmupMode: warmupMode,
       rotationEffectiveMinActiveDays: effectiveRotationActiveMin,
       rotationEffectiveMinSpanDays: effectiveRotationSpanMin,
       rotationEffectiveMinTrackAgeDays: effectiveTrackAgeMin,
+      rotationEffectiveMinReleaseAgeDays: effectiveReleaseAgeMin,
       rotationRateBasisDays: rateBasisDays,
+      rotationRecentWindowDays: recentWindowDays,
       rangeDays,
       observedCoverageDays,
       observedSpanDays,
@@ -1314,6 +1438,7 @@ export async function runBackpoolAnalysis({
       rotationBackpoolTrackCount: rotationBackpoolTracks.length,
       rotationBackpoolPlays,
       rotationBackpoolShare,
+      resurgenceTrackCount: resurgenceTracks.length,
       rotationPattern,
       backpoolTrackCount: backpoolTracks.length,
       lowRotationBackpoolTrackCount: lowRotationBackpoolTracks.length,
@@ -1323,6 +1448,7 @@ export async function runBackpoolAnalysis({
       rotationBackpoolTracks: rotationBackpoolTracks.slice(0, topLimit).map(mapRotationTrack),
       hotRotationTracks: hotRotationTracks.slice(0, topLimit).map(mapRotationTrack),
       sparseRotationTracks: sparseRotationTracks.slice(0, topLimit).map(mapRotationTrack),
+      resurgenceTracks: resurgenceTracks.slice(0, topLimit).map(mapRotationTrack),
       recentTracks: recentTracks.slice(0, topLimit).map(mapRotationTrack),
       topBackpoolTracks: backpoolTracks.slice(0, topLimit).map(mapTrack),
       lowRotationBackpoolTracks: lowRotationBackpoolTracks.slice(0, topLimit).map(mapTrack),
@@ -1339,6 +1465,7 @@ export async function runBackpoolAnalysis({
       '',
       `- Primäre Definition (Rotation): Ø Plays/Tag **${rotationMinDaily.toFixed(2)} bis ${lowRotationMax.toFixed(2)}**, aktive Tage **>= ${rotationMinDays}**, Spannweite **>= ${rotationSpanMin} Tage**`,
       `- Neu-Filter: Titel muessen mind. **${trackAgeMin} Tage** im Senderverlauf vorhanden sein (adaptive Absenkung bei kurzer Historie moeglich).`,
+      `- Release-Filter (Rotation): validiertes Release-Alter **>= ${releaseAgeMin} Tage** (ohne Release kein Rotation-Backpool).`,
       adaptiveRotation
         ? '- Adaptive Auswertung aktiv: Bei kurzer Historie werden Mindestwerte pro Sender auf die verfügbare Datenbasis skaliert (Warmup-Modus).'
         : '- Adaptive Auswertung deaktiviert: Es gelten die festen Mindestwerte für alle Sender.',
@@ -1404,6 +1531,7 @@ export async function runBackpoolAnalysis({
       lowRotationMaxDailyPlays: lowRotationMax,
       rotationMinActiveDays: rotationMinDays,
       rotationMinSpanDays: rotationSpanMin,
+      rotationMinReleaseAgeDays: releaseAgeMin,
       minTrackAgeDays: trackAgeMin,
       rotationAdaptive: adaptiveRotation,
       rangeDays,
@@ -1424,6 +1552,7 @@ export async function runBackpoolAnalysis({
     lowRotationMaxDailyPlays: lowRotationMax,
     rotationMinActiveDays: rotationMinDays,
     rotationMinSpanDays: rotationSpanMin,
+    rotationMinReleaseAgeDays: releaseAgeMin,
     minTrackAgeDays: trackAgeMin,
     rotationAdaptive: adaptiveRotation,
     rangeDays,

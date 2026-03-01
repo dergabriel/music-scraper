@@ -39,6 +39,25 @@ Enthalten:
 - macOS-Doppelklick-Variante (`*.command`)
 - typische Fehlerbehebung
 
+## GitHub Automation (temporär)
+
+Für automatisches Tracking über GitHub Actions sind zwei Workflows enthalten:
+
+- `.github/workflows/hourly-track.yml`  
+  Läuft stündlich (Minute `17`) und führt aus:
+  - Ingest
+  - `maintain-db`
+  - Backpool-Refresh
+  - Tagesauswertung für gestern (Europe/Berlin)
+- `.github/workflows/daily-report.yml`  
+  Läuft täglich und führt den Daily-Job inkl. Coverage + Report aus.
+
+Wichtig:
+
+- Die SQLite-DB wird zwischen Runs über den GitHub Cache gehalten (`data/yrpa.sqlite`).
+- Cron bei GitHub läuft in **UTC** (nicht Europe/Berlin).
+- Beim ersten Start einmal manuell über `Actions -> Run workflow` auslösen, damit der Cache aufgebaut wird.
+
 ## Häufige Befehle
 
 ```bash

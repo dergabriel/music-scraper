@@ -123,6 +123,7 @@ program
   .option('--low-rotation-max-daily-plays <number>', 'Max avg plays/day for low-rotation backpool list', '2')
   .option('--rotation-min-active-days <number>', 'Minimum active days in range for rotation backpool', '5')
   .option('--rotation-min-span-days <number>', 'Minimum first-to-last span days for rotation backpool', '28')
+  .option('--rotation-min-release-age-days <number>', 'Minimum release age in days for rotation backpool', '1095')
   .option('--min-track-age-days <number>', 'Minimum age of a track in station history to count as backpool', '30')
   .option('--rotation-adaptive <0|1>', 'Adapt rotation thresholds to available station history (default: 1)', '1')
   .option('--hydrate-missing-release', 'Enrich missing release metadata during analysis')
@@ -142,6 +143,7 @@ program
         lowRotationMaxDailyPlays: Number(opts.lowRotationMaxDailyPlays),
         rotationMinActiveDays: Number(opts.rotationMinActiveDays),
         rotationMinSpanDays: Number(opts.rotationMinSpanDays),
+        rotationMinReleaseAgeDays: Number(opts.rotationMinReleaseAgeDays),
         minTrackAgeDays: Number(opts.minTrackAgeDays),
         rotationAdaptive: String(opts.rotationAdaptive ?? '1') !== '0',
         autoEnrichMissingRelease: Boolean(opts.hydrateMissingRelease),
