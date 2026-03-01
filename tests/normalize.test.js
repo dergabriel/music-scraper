@@ -64,6 +64,7 @@ describe('normalizeArtistTitle', () => {
 
   it('marks show/jingle-like items as suspicious', () => {
     expect(isLikelyJingleLike('Good Morning Show', 'Feel Good Friday')).toBe(true);
+    expect(isLikelyJingleLike('Am Mikrofon', 'Gunnar Töpfer')).toBe(true);
     expect(isLikelyJingleLike('Bruno Mars', '24K Magic')).toBe(false);
   });
 

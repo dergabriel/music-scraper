@@ -84,4 +84,14 @@ describe('parsers', () => {
     expect(plays[2].artistRaw).toBe('Eminem feat. Rihanna');
     expect(plays[2].titleRaw).toBe('The Monster');
   });
+
+  it('parses onlineradiobox rows in "Title / Artist" format (SWR3 style)', () => {
+    const parser = new OnlineradioboxParser({ timezone: 'Europe/Berlin' });
+    const plays = parser.parse(fixture('onlineradiobox_slash_schedule.html'), 'https://example.test');
+    expect(plays.length).toBe(2);
+    expect(plays[0].artistRaw).toBe('Imagine Dragons x J.I.D');
+    expect(plays[0].titleRaw).toBe('Enemy');
+    expect(plays[1].artistRaw).toBe("K'naan");
+    expect(plays[1].titleRaw).toBe("Wavin' Flag");
+  });
 });

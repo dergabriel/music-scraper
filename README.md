@@ -29,7 +29,7 @@ Dann öffnen:
 
 Die komplette Schritt-für-Schritt-Einrichtung ist hier:
 
-- [Setup Guide](/Users/gabrielbecker/Documents/Codex/Music%20Scraper/docs/setup.md)
+- [Setup Guide](docs/setup.md)
 
 Enthalten:
 

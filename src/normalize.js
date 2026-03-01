@@ -8,7 +8,7 @@ const PROMO_SUFFIX_PATTERN = /\s*[-|:]\s*neu\s*$/i;
 const NOISE_PATTERN =
   /(https?:\/\/|www\.|freestar|window\.|function\(|oauth|xmlhttprequest|onlineradiobox|cookie|benutzer vereinbarung|privatsphäre|serververbindung|installieren sie|\bandroid\b|\bios\b|contentgraph|coverimageurl|streams?\s*[:=])/i;
 const JINGLE_PATTERN =
-  /\b(jingle|station voice|show opener|morningshow|morning show|good morning show|verkehr|wetter|news|nachrichten|promo|claim|werbung|commercial|spot|ident|soundlogo|im werbeblock|werbeblock)\b/i;
+  /\b(jingle|station voice|show opener|morningshow|morning show|good morning show|verkehr|wetter|news|nachrichten|promo|claim|werbung|commercial|spot|ident|soundlogo|im werbeblock|werbeblock|am mikrofon)\b/i;
 const STATION_PROMO_PATTERN =
   /\b(deutschlands?\s+bigg?ste|radio|sender|station|berlin|baden[-\s]?württemberg|nrw|hamburg|sachsen|bayern|beats|hits)\b/i;
 const UNKNOWN_TRACK_PATTERN = /^(unknown|unbekannt|n\/a|na)$/i;

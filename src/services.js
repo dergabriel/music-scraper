@@ -294,6 +294,7 @@ export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
     or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%serververbindung verloren%'
     or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%installieren sie gratis%'
     or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%onlineradio deutschland%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%am mikrofon%'
   `;
 
   const found = db.prepare(`select count(*) as c from plays where ${whereClause}`).get()?.c ?? 0;
@@ -325,6 +326,14 @@ export function runPromoMarkerMaintenance({ dbPath, dryRun = false, maxPairs = 5
       or instr(lower(title), '(neu)') > 0
       or lower(artist) like 'neu - %'
       or lower(title) like 'neu - %'
+      or instr(artist, '"') > 0
+      or instr(title, '"') > 0
+      or instr(artist, '“') > 0
+      or instr(title, '“') > 0
+      or instr(artist, '”') > 0
+      or instr(title, '”') > 0
+      or instr(artist, '„') > 0
+      or instr(title, '„') > 0
     group by track_key
   `).all();
 
@@ -436,7 +445,7 @@ export function runPromoMarkerMaintenance({ dbPath, dryRun = false, maxPairs = 5
     dailyRowsRebuilt,
     dryRun
   };
-  logger?.info(result, 'promo marker maintenance completed');
+  logger?.info(result, 'promo/quote marker maintenance completed');
   return result;
 }
 

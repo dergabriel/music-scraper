@@ -6,7 +6,7 @@ const INVALID_TRACK_FRAGMENT =
   /(coverimageurl|contentgraph|streams?\s*[:=]|window\.|function\(|https?:\/\/|xmlhttprequest|@context|oauth|cookie|freestar|placementname|slotid|benutzer vereinbarung|privatsphäre|serververbindung verloren|onlineradio deutschland|installieren sie gratis)/i;
 const MAX_ARTIST_LEN = 90;
 const MAX_TITLE_LEN = 160;
-const DASH_SEPARATORS = [' - ', ' – ', ' — '];
+const DASH_SEPARATORS = [' - ', ' – ', ' — ', ' / '];
 const ARTIST_CUE_PATTERN = /(?:\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bx\b|\bvs\.?\b|[&,;])/i;
 const QUOTED_PATTERN = /^["'“”„].+["'“”„]$/;
 
@@ -98,6 +98,10 @@ function split(text, { dashOrientation = 'artist_title', allowColon = false } = 
       const [first, ...rest] = cleaned.split(sep);
       const second = rest.join(sep).trim();
       if (!first || !second) return null;
+
+      if (sep === ' / ') {
+        return validateParts(second, first) ?? validateParts(first, second);
+      }
 
       if (dashOrientation === 'title_artist') {
         return validateParts(second, first) ?? validateParts(first, second);

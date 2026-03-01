@@ -108,6 +108,22 @@ stations:
     fetcher: "http"
     timezone: "Europe/Berlin"
 
+  - id: "swr3"
+    name: "SWR3"
+    playlist_url: "https://onlineradiobox.com/de/swr3live/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "hr3"
+    name: "hr3"
+    playlist_url: "https://onlineradiobox.com/de/hr3radio/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/hr3osthessen/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
   - id: "kronehit"
     name: "kronehit"
     playlist_url: "https://onlineradiobox.com/at/kronehit/playlist/"
