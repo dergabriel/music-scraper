@@ -70,6 +70,56 @@ function coveredBerlinHours(plays, timezone) {
   return hours.size;
 }
 
+function isPhonostarTitleUrl(url) {
+  return /https?:\/\/(?:www\.)?phonostar\.de\/radio\/[^/]+\/titel(?:\?.*)?$/i.test(String(url || ''));
+}
+
+function withPageParam(url, page) {
+  if (!Number.isFinite(page) || page <= 1) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set('page', String(page));
+  return parsed.toString();
+}
+
+function minuteOfDayInTimezone(date, timezone) {
+  const dt = DateTime.fromJSDate(date, { zone: 'utc' }).setZone(timezone || BERLIN_TZ);
+  return dt.hour * 60 + dt.minute;
+}
+
+async function fetchPhonostarPaginatedPlays({ fetcher, parser, url, timezone, maxPages = 6 }) {
+  const collected = [];
+  const seen = new Set();
+  let lastMinuteOfDay = null;
+  let crossedDayBoundary = false;
+  let pagesFetched = 0;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const pageUrl = withPageParam(url, page);
+    const html = await fetcher.fetchHtml(pageUrl);
+    const parsed = parser.parse(html, pageUrl);
+    pagesFetched += 1;
+    if (!parsed.length) break;
+
+    for (const play of parsed) {
+      const minute = minuteOfDayInTimezone(play.playedAt, timezone);
+      if (lastMinuteOfDay !== null && minute > lastMinuteOfDay) {
+        crossedDayBoundary = true;
+        break;
+      }
+
+      lastMinuteOfDay = minute;
+      const key = `${play.playedAt.toISOString()}|${play.artistRaw}|${play.titleRaw}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      collected.push(play);
+    }
+
+    if (crossedDayBoundary) break;
+  }
+
+  return { plays: collected, pagesFetched, crossedDayBoundary };
+}
+
 function parseIsoDate(value, label) {
   if (!value) return null;
   const dt = DateTime.fromISO(value, { zone: BERLIN_TZ }).startOf('day');
@@ -476,8 +526,34 @@ export async function runIngest({ configPath, dbPath, logger }) {
 
       for (const url of urlsToTry) {
         try {
-          const html = await fetcher.fetchHtml(url);
-          const parsed = parser.parse(html, url);
+          let parsed = [];
+          if (isPhonostarTitleUrl(url)) {
+            const maxPages = Math.max(1, Math.min(Number(process.env.YRPA_PHONOSTAR_MAX_PAGES) || 6, 20));
+            const paged = await fetchPhonostarPaginatedPlays({
+              fetcher,
+              parser,
+              url,
+              timezone: station.timezone,
+              maxPages
+            });
+            parsed = paged.plays;
+            if (parsed.length) {
+              logger.info(
+                {
+                  station: station.id,
+                  url,
+                  pagesFetched: paged.pagesFetched,
+                  crossedDayBoundary: paged.crossedDayBoundary,
+                  maxPages
+                },
+                'phonostar pagination parsed'
+              );
+            }
+          } else {
+            const html = await fetcher.fetchHtml(url);
+            parsed = parser.parse(html, url);
+          }
+
           if (parsed.length > 0) {
             plays = parsed;
             usedUrl = url;
