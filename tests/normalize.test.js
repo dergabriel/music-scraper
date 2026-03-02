@@ -20,6 +20,28 @@ describe('normalizeArtistTitle', () => {
     expect(out.title).toBe('track');
   });
 
+  it('uses one track key for joiner variants and artist order', () => {
+    const a = normalizeArtistTitle('milleniumkid & jbs', 'vielleicht vielleicht');
+    const b = normalizeArtistTitle('milleniumkid x jbs', 'vielleicht vielleicht');
+    const c = normalizeArtistTitle('jbs; milleniumkid', 'vielleicht vielleicht');
+    expect(a.trackKey).toBe(b.trackKey);
+    expect(a.trackKey).toBe(c.trackKey);
+  });
+
+  it('normalizes trailing beats suffix safely', () => {
+    const a = normalizeArtistTitle('jbs beats; milleniumkid', 'vielleicht vielleicht');
+    const b = normalizeArtistTitle('jbs & milleniumkid', 'vielleicht vielleicht');
+    expect(a.artist).toBe('jbs & milleniumkid');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
+  it('keeps remix normalization behavior stable', () => {
+    const a = normalizeArtistTitle('Artist x Guest', 'Track (Remix)');
+    const b = normalizeArtistTitle('Guest; Artist', 'Track');
+    expect(a.title).toBe('track');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
   it('builds stable hash for equal canonical forms', () => {
     const a = normalizeArtistTitle('A FEAT. B', 'C (remix)');
     const b = normalizeArtistTitle('a', 'c');
@@ -92,6 +114,7 @@ describe('normalizeArtistTitle', () => {
     expect(isLikelyNoiseTrack('anruf im verkehrszentrum', '0800 637 637 8')).toBe(true);
     expect(isLikelyNoiseTrack('hotline: 08000-210000', 'kontakt zur')).toBe(true);
     expect(isLikelyNoiseTrack('jetzt anrufen !', '0331 70 97 110')).toBe(true);
+    expect(isLikelyNoiseTrack('jetzt anrufen ! 0331 70 97 110', '')).toBe(true);
   });
 
   it('marks ad and bulletin fragments as noise', () => {
@@ -102,10 +125,20 @@ describe('normalizeArtistTitle', () => {
       )
     ).toBe(true);
     expect(isLikelyNoiseTrack('marke xyz (handel)', '250721 kampagne 2026 musik2 15sec.')).toBe(true);
+    expect(isLikelyNoiseTrack('usa/israel und iran gehen weiter', '*** gegenseitige angriffe')).toBe(true);
   });
 
   it('marks station slogan lines as noise', () => {
     expect(isLikelyNoiseTrack('ffn', 'mehr musik. mehr abwechslung. mehr niedersachse')).toBe(true);
+  });
+
+  it('marks show-context hints as noise', () => {
+    expect(isLikelyNoiseTrack('aus dem 1live haus in köln die junge nacht der ard', '')).toBe(true);
+  });
+
+  it('keeps normal tracks with numbers valid', () => {
+    expect(isLikelyNoiseTrack('maroon 5', 'one more night')).toBe(false);
+    expect(isLikelyNoiseTrack('bruno mars', '24k magic')).toBe(false);
   });
 
   it('detects station terms with punctuation/hyphen variants', () => {

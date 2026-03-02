@@ -383,48 +383,308 @@ export function runTrackOrientationMaintenance({
 
 export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
   const db = openDb(dbPath);
-  const whereClause = `
-    length(title_raw) > 220
-    or length(artist_raw) > 140
-    or length(title) > 180
-    or length(artist) > 120
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%freestar%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%xmlhttprequest%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%window.trackserver%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%benutzer vereinbarung%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%cookie-verwaltung%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%serververbindung verloren%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%installieren sie gratis%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%onlineradio deutschland%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%am mikrofon%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%anruf im verkehrszentrum%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%hotline%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%kontakt zur%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%wochenkracher%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%marken-discount%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%die abendshow%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%nachrichten%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%werbeblock%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%commercial%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%promo%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%spot%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '% sec%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '% sek%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%kw %'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%mehr musik%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%mehr abwechslung%'
-    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%niedersachs%'
-  `;
+  const combinedExpr = "lower(coalesce(p.artist_raw, '') || ' ' || coalesce(p.title_raw, '') || ' ' || coalesce(p.artist, '') || ' ' || coalesce(p.title, ''))";
+  const candidates = db.prepare(`
+    select
+      p.id,
+      p.station_id,
+      p.played_at_utc,
+      p.artist_raw,
+      p.title_raw,
+      p.artist,
+      p.title,
+      s.name as station_name
+    from plays p
+    left join stations s on s.id = p.station_id
+    where
+      length(p.title_raw) > 220
+      or length(p.artist_raw) > 140
+      or length(p.title) > 180
+      or length(p.artist) > 120
+      or ${combinedExpr} like '%freestar%'
+      or ${combinedExpr} like '%xmlhttprequest%'
+      or ${combinedExpr} like '%window.trackserver%'
+      or ${combinedExpr} like '%benutzer vereinbarung%'
+      or ${combinedExpr} like '%cookie-verwaltung%'
+      or ${combinedExpr} like '%serververbindung verloren%'
+      or ${combinedExpr} like '%installieren sie gratis%'
+      or ${combinedExpr} like '%onlineradio deutschland%'
+      or ${combinedExpr} like '%am mikrofon%'
+      or ${combinedExpr} like '%anruf im verkehrszentrum%'
+      or ${combinedExpr} like '%jetzt anrufen%'
+      or ${combinedExpr} like '%rufen sie an%'
+      or ${combinedExpr} like '%ruf an%'
+      or ${combinedExpr} like '%anrufen%'
+      or ${combinedExpr} like '%hotline%'
+      or ${combinedExpr} like '%kontakt zur%'
+      or ${combinedExpr} like '%whatsapp%'
+      or ${combinedExpr} like '%studio%'
+      or ${combinedExpr} like '%leitung%'
+      or ${combinedExpr} like '%gewinnspiel%'
+      or ${combinedExpr} like '%wochenkracher%'
+      or ${combinedExpr} like '%marken-discount%'
+      or ${combinedExpr} like '%die abendshow%'
+      or ${combinedExpr} like '%nachrichten%'
+      or ${combinedExpr} like '%junge nacht%'
+      or ${combinedExpr} like '%ard%'
+      or ${combinedExpr} like '%aus dem%'
+      or ${combinedExpr} like '%haus in%'
+      or ${combinedExpr} like '%live aus dem%'
+      or (${combinedExpr} like '%/%' and ${combinedExpr} like '%angriff%')
+      or ${combinedExpr} like '%gegenseitige angriffe%'
+      or ${combinedExpr} like '%werbeblock%'
+      or ${combinedExpr} like '%commercial%'
+      or ${combinedExpr} like '%promo%'
+      or ${combinedExpr} like '%spot%'
+      or ${combinedExpr} like '% sec%'
+      or ${combinedExpr} like '% sek%'
+      or ${combinedExpr} like '%kw %'
+      or ${combinedExpr} like '%mehr musik%'
+      or ${combinedExpr} like '%mehr abwechslung%'
+      or ${combinedExpr} like '%niedersachs%'
+      or ${combinedExpr} glob '*[0-9]*'
+  `).all();
 
-  const found = db.prepare(`select count(*) as c from plays where ${whereClause}`).get()?.c ?? 0;
+  const toDelete = [];
+  const affectedDates = new Set();
+  for (const row of candidates) {
+    const artist = row.artist_raw || row.artist || '';
+    const title = row.title_raw || row.title || '';
+    const isNoise = isLikelyNoiseTrack(artist, title, {
+      stationName: row.station_name || '',
+      stationId: row.station_id || ''
+    });
+    const isJingle = isLikelyJingleLike(artist, title, {
+      stationName: row.station_name || '',
+      stationId: row.station_id || ''
+    });
+    if (!isNoise && !isJingle) continue;
+    toDelete.push(Number(row.id));
+    const dateBerlin = DateTime.fromISO(row.played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ).toISODate();
+    if (dateBerlin) affectedDates.add(dateBerlin);
+  }
+
+  const found = toDelete.length;
   let removed = 0;
+  let dailyRowsRebuilt = 0;
   if (!dryRun && found > 0) {
-    removed = db.prepare(`delete from plays where ${whereClause}`).run().changes;
+    const tx = db.transaction(() => {
+      const deleteChunk = db.prepare(`delete from plays where id in (${Array.from({ length: 200 }, () => '?').join(', ')})`);
+      for (let i = 0; i < toDelete.length; i += 200) {
+        const chunk = toDelete.slice(i, i + 200);
+        const stmt = chunk.length === 200
+          ? deleteChunk
+          : db.prepare(`delete from plays where id in (${Array.from({ length: chunk.length }, () => '?').join(', ')})`);
+        removed += stmt.run(...chunk).changes;
+      }
+
+      for (const dateBerlin of affectedDates) {
+        const range = buildDayRangeBerlin(dateBerlin);
+        db.prepare('delete from daily_station_stats where date_berlin = ?').run(dateBerlin);
+        db.prepare('delete from daily_track_stats where date_berlin = ?').run(dateBerlin);
+        db.prepare('delete from daily_overall_track_stats where date_berlin = ?').run(dateBerlin);
+
+        const stationRows = db.prepare(`
+          select station_id, count(*) as total_plays, count(distinct track_key) as unique_tracks
+          from plays
+          where played_at_utc >= ? and played_at_utc < ?
+          group by station_id
+        `).all(range.startUtcIso, range.endUtcIso);
+        for (const row of stationRows) {
+          upsertDailyStationStat(db, {
+            date_berlin: dateBerlin,
+            station_id: row.station_id,
+            total_plays: Number(row.total_plays || 0),
+            unique_tracks: Number(row.unique_tracks || 0)
+          });
+          dailyRowsRebuilt += 1;
+        }
+
+        const dailyTrackRows = db.prepare(`
+          select
+            station_id,
+            track_key,
+            min(artist) as artist,
+            min(title) as title,
+            count(*) as plays
+          from plays
+          where played_at_utc >= ? and played_at_utc < ?
+          group by station_id, track_key
+        `).all(range.startUtcIso, range.endUtcIso);
+        for (const row of dailyTrackRows) {
+          upsertDailyTrackStat(db, {
+            date_berlin: dateBerlin,
+            station_id: row.station_id,
+            track_key: row.track_key,
+            artist: row.artist,
+            title: row.title,
+            plays: Number(row.plays || 0)
+          });
+          dailyRowsRebuilt += 1;
+        }
+
+        const dailyOverallRows = db.prepare(`
+          select
+            track_key,
+            min(artist) as artist,
+            min(title) as title,
+            count(*) as plays
+          from plays
+          where played_at_utc >= ? and played_at_utc < ?
+          group by track_key
+        `).all(range.startUtcIso, range.endUtcIso);
+        for (const row of dailyOverallRows) {
+          upsertDailyOverallTrackStat(db, {
+            date_berlin: dateBerlin,
+            track_key: row.track_key,
+            artist: row.artist,
+            title: row.title,
+            plays: Number(row.plays || 0)
+          });
+          dailyRowsRebuilt += 1;
+        }
+      }
+    });
+    tx();
   }
   db.close();
 
-  const result = { found, removed, dryRun };
+  const result = {
+    candidates: candidates.length,
+    found,
+    removed,
+    affectedDays: affectedDates.size,
+    dailyRowsRebuilt,
+    dryRun
+  };
   logger?.info(result, 'noise play cleanup completed');
+  return result;
+}
+
+export function runCanonicalArtistMaintenance({ dbPath, dryRun = false, maxPairs = 5000, logger }) {
+  const db = openDb(dbPath);
+  const candidateRows = db.prepare(`
+    select
+      track_key,
+      min(artist) as artist,
+      min(title) as title,
+      count(*) as plays
+    from plays
+    where artist like '%&%' or artist like '%;%' or artist like '%,%' or artist like '%/%'
+      or lower(artist) like '% x %' or lower(artist) like '% und %' or lower(artist) like '% and %'
+      or lower(artist) like '% vs %' or lower(artist) like '% with %'
+    group by track_key
+  `).all();
+
+  const metadataRows = db.prepare('select * from track_metadata').all();
+  const metadataByTrackKey = new Map(metadataRows.map((row) => [row.track_key, row]));
+
+  const mappings = [];
+  for (const row of candidateRows) {
+    const normalized = normalizeArtistTitle(row.artist, row.title);
+    if (!normalized.artist || !normalized.title) continue;
+    if (normalized.trackKey === row.track_key) continue;
+    mappings.push({
+      oldKey: row.track_key,
+      newKey: normalized.trackKey,
+      artist: normalized.artist,
+      title: normalized.title,
+      plays: Number(row.plays || 0)
+    });
+  }
+
+  mappings.sort((a, b) => b.plays - a.plays);
+  const selected = mappings.slice(0, Math.max(1, Number(maxPairs) || 5000));
+
+  let merged = 0;
+  let playsUpdated = 0;
+  let metadataUpdated = 0;
+  let dailyRowsRebuilt = 0;
+
+  if (!dryRun && selected.length > 0) {
+    const tx = db.transaction(() => {
+      for (const map of selected) {
+        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
+        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
+
+        const changes = db.prepare(`
+          update plays
+          set track_key = ?, artist = ?, title = ?
+          where track_key = ?
+        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
+        playsUpdated += changes;
+
+        const dailyByStation = db.prepare(`
+          select date_berlin, station_id, sum(plays) as plays
+          from daily_track_stats
+          where track_key in (?, ?)
+          group by date_berlin, station_id
+        `).all(map.newKey, map.oldKey);
+        if (dailyByStation.length) {
+          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertDaily = db.prepare(`
+            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyByStation) {
+            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
+            dailyRowsRebuilt += 1;
+          }
+        }
+
+        const dailyOverall = db.prepare(`
+          select date_berlin, sum(plays) as plays
+          from daily_overall_track_stats
+          where track_key in (?, ?)
+          group by date_berlin
+        `).all(map.newKey, map.oldKey);
+        if (dailyOverall.length) {
+          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertOverall = db.prepare(`
+            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyOverall) {
+            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
+          }
+        }
+
+        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
+
+        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+        if (chosenMeta) {
+          const mergedMeta = {
+            ...chosenMeta,
+            track_key: map.newKey,
+            artist: map.artist,
+            title: map.title
+          };
+          upsertTrackMetadata(db, mergedMeta);
+          metadataByTrackKey.set(map.newKey, mergedMeta);
+          metadataUpdated += 1;
+        }
+        if (loserMeta) {
+          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
+          metadataByTrackKey.delete(map.oldKey);
+        }
+
+        merged += 1;
+      }
+    });
+    tx();
+  }
+
+  db.close();
+  const result = {
+    candidates: mappings.length,
+    selectedPairs: selected.length,
+    merged,
+    playsUpdated,
+    metadataUpdated,
+    dailyRowsRebuilt,
+    dryRun
+  };
+  logger?.info(result, 'canonical artist maintenance completed');
   return result;
 }
 

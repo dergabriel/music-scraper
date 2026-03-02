@@ -153,12 +153,13 @@ describe('e2e pipeline', () => {
     expect(report).toContain('## FluxFM');
     expect(report).toContain('## Cross Station Trends');
 
+    const expectedNewTrack = normalizeArtistTitle('Fontaines D.C.', 'Starburster');
     const dlf = stationAnalytics.find((s) => s.station.id === 'dlf_nova');
     expect(dlf.totalPlays).toBe(3);
-    expect(dlf.newTracks.some((t) => t.artist === 'fontaines d.c.' && t.title === 'starburster')).toBe(true);
+    expect(dlf.newTracks.some((t) => t.artist === expectedNewTrack.artist && t.title === expectedNewTrack.title)).toBe(true);
 
     const sharedNew = crossAnalytics.newInMultipleStations.find(
-      (t) => t.artist === 'fontaines d.c.' && t.title === 'starburster'
+      (t) => t.artist === expectedNewTrack.artist && t.title === expectedNewTrack.title
     );
     expect(sharedNew).toBeTruthy();
     expect(sharedNew.stationCount).toBe(2);
