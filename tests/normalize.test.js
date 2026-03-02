@@ -88,6 +88,25 @@ describe('normalizeArtistTitle', () => {
     ).toBe(true);
   });
 
+  it('marks hotline and traffic-center entries as noise', () => {
+    expect(isLikelyNoiseTrack('anruf im verkehrszentrum', '0800 637 637 8')).toBe(true);
+    expect(isLikelyNoiseTrack('hotline: 08000-210000', 'kontakt zur')).toBe(true);
+  });
+
+  it('marks ad and bulletin fragments as noise', () => {
+    expect(
+      isLikelyNoiseTrack(
+        'die abendshow - pop und nachrichten gehen weiter',
+        '*** live ticker - marken-discount'
+      )
+    ).toBe(true);
+    expect(isLikelyNoiseTrack('marke xyz (handel)', '250721 kampagne 2026 musik2 15sec.')).toBe(true);
+  });
+
+  it('marks station slogan lines as noise', () => {
+    expect(isLikelyNoiseTrack('ffn', 'mehr musik. mehr abwechslung. mehr niedersachse')).toBe(true);
+  });
+
   it('detects station terms with punctuation/hyphen variants', () => {
     expect(
       isLikelyJingleLike('Fritz', 'immer wenn ich dis play, erscheint es auf meinem display', {

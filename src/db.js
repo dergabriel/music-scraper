@@ -356,15 +356,26 @@ export function upsertTrackMetadata(db, row) {
 }
 
 export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
-  const parsedLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+  const numericLimit = Number(limit);
+  const parsedLimit = Number.isFinite(numericLimit) && numericLimit > 0
+    ? Math.max(1, Math.min(numericLimit, 5000))
+    : null;
+  const run = (sql, params = []) => {
+    if (parsedLimit == null) {
+      return db.prepare(sql).all(...params);
+    }
+    return db.prepare(`${sql}\n      limit ?`).all(...params, parsedLimit);
+  };
 
   if (stationId && query) {
-    return db.prepare(`
+    return run(`
       select
         p.track_key,
         min(p.artist) as artist,
         min(p.title) as title,
         count(*) as total_plays,
+        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
         min(p.played_at_utc) as first_played_at_utc,
         max(p.played_at_utc) as last_played_at_utc,
         min(m.release_date_utc) as release_date_utc,
@@ -375,17 +386,18 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
         and (p.artist like ? or p.title like ?)
       group by p.track_key
       order by total_plays desc, artist asc, title asc
-      limit ?
-    `).all(stationId, `%${query}%`, `%${query}%`, parsedLimit);
+    `, [stationId, `%${query}%`, `%${query}%`]);
   }
 
   if (stationId) {
-    return db.prepare(`
+    return run(`
       select
         p.track_key,
         min(p.artist) as artist,
         min(p.title) as title,
         count(*) as total_plays,
+        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
         min(p.played_at_utc) as first_played_at_utc,
         max(p.played_at_utc) as last_played_at_utc,
         min(m.release_date_utc) as release_date_utc,
@@ -395,17 +407,18 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
       where p.station_id = ?
       group by p.track_key
       order by total_plays desc, artist asc, title asc
-      limit ?
-    `).all(stationId, parsedLimit);
+    `, [stationId]);
   }
 
   if (query) {
-    return db.prepare(`
+    return run(`
       select
         p.track_key,
         min(p.artist) as artist,
         min(p.title) as title,
         count(*) as total_plays,
+        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
         min(p.played_at_utc) as first_played_at_utc,
         max(p.played_at_utc) as last_played_at_utc,
         min(m.release_date_utc) as release_date_utc,
@@ -415,16 +428,17 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
       where p.artist like ? or p.title like ?
       group by p.track_key
       order by total_plays desc, artist asc, title asc
-      limit ?
-    `).all(`%${query}%`, `%${query}%`, parsedLimit);
+    `, [`%${query}%`, `%${query}%`]);
   }
 
-  return db.prepare(`
+  return run(`
     select
       p.track_key,
       min(p.artist) as artist,
       min(p.title) as title,
       count(*) as total_plays,
+      count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+      round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
       min(p.played_at_utc) as first_played_at_utc,
       max(p.played_at_utc) as last_played_at_utc,
       min(m.release_date_utc) as release_date_utc,
@@ -433,8 +447,7 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
     left join track_metadata m on m.track_key = p.track_key
     group by p.track_key
     order by total_plays desc, artist asc, title asc
-    limit ?
-  `).all(parsedLimit);
+  `);
 }
 
 export function getTrackStationCounts(db, { trackKey, startUtcIso, endUtcIso }) {

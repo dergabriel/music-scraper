@@ -88,10 +88,12 @@ function bindChartTooltip(container, target, getText) {
     tooltip.textContent = getText();
     tooltip.style.opacity = '1';
     const rect = container.getBoundingClientRect();
-    const x = event.clientX - rect.left + 10;
-    const y = event.clientY - rect.top - 26;
-    tooltip.style.left = `${Math.max(8, x)}px`;
-    tooltip.style.top = `${Math.max(8, y)}px`;
+    const rawX = event.clientX - rect.left + 10;
+    const rawY = event.clientY - rect.top - 26;
+    const maxX = Math.max(8, rect.width - tooltip.offsetWidth - 8);
+    const maxY = Math.max(8, rect.height - tooltip.offsetHeight - 8);
+    tooltip.style.left = `${Math.max(8, Math.min(rawX, maxX))}px`;
+    tooltip.style.top = `${Math.max(8, Math.min(rawY, maxY))}px`;
   };
   const hide = () => {
     tooltip.style.opacity = '0';
@@ -101,13 +103,106 @@ function bindChartTooltip(container, target, getText) {
   target.addEventListener('mouseleave', hide);
 }
 
-function formatSeriesPeriod(period, bucket) {
+function formatSeriesPeriod(period, bucket, compact = false) {
   if (!period) return '-';
   if (bucket === 'day') {
-    const [y, m, d] = period.split('-');
-    return `${d}.${m}.${y}`;
+    const date = new Date(`${period}T12:00:00.000Z`);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleDateString('de-DE', compact
+        ? { day: '2-digit', month: '2-digit' }
+        : { day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+    const [y, m, d] = String(period).split('-');
+    return compact ? `${d}.${m}` : `${d}.${m}.${y}`;
   }
   return period;
+}
+
+function formatPlays(value) {
+  return Number(value || 0).toLocaleString('de-DE');
+}
+
+function buildNiceYAxis(maxValue, targetTicks = 4) {
+  const safeMax = Math.max(1, Number(maxValue || 0));
+  const roughStep = safeMax / Math.max(1, targetTicks);
+  const exp = Math.floor(Math.log10(roughStep));
+  const base = 10 ** exp;
+  const norm = roughStep / base;
+  const factor = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+  const step = factor * base;
+  const maxTick = Math.ceil(safeMax / step) * step;
+  const ticks = [];
+  for (let value = 0; value <= maxTick + step * 0.25; value += step) {
+    ticks.push(Number(value.toFixed(8)));
+  }
+  return { step, maxTick, ticks };
+}
+
+function buildXTickIndexes(length, maxTicks = 6) {
+  if (length <= 0) return [];
+  if (length === 1) return [0];
+  const count = Math.min(maxTicks, length);
+  const indexes = new Set([0, length - 1]);
+  for (let i = 1; i < count - 1; i += 1) {
+    indexes.add(Math.round((i * (length - 1)) / (count - 1)));
+  }
+  return Array.from(indexes).sort((a, b) => a - b);
+}
+
+function renderChartEmpty(container, message) {
+  container.innerHTML = '';
+  const empty = document.createElement('div');
+  empty.className = 'chart-empty';
+  empty.textContent = message;
+  container.appendChild(empty);
+}
+
+function appendChartStats(container, stats) {
+  if (!Array.isArray(stats) || !stats.length) return;
+  const row = document.createElement('div');
+  row.className = 'chart-stats';
+  stats.forEach((item) => {
+    if (!item?.label) return;
+    const chip = document.createElement('div');
+    chip.className = 'chart-stat';
+    chip.innerHTML = `<span>${item.label}</span><strong>${item.value ?? '-'}</strong>`;
+    row.appendChild(chip);
+  });
+  if (row.children.length) {
+    container.appendChild(row);
+  }
+}
+
+function downsampleSeries(series, maxPoints = 220) {
+  const rows = Array.isArray(series) ? series : [];
+  if (rows.length <= maxPoints) return rows;
+  const step = Math.ceil(rows.length / maxPoints);
+  const sampled = [];
+  for (let i = 0; i < rows.length; i += step) {
+    sampled.push(rows[i]);
+  }
+  if (sampled[sampled.length - 1] !== rows[rows.length - 1]) {
+    sampled.push(rows[rows.length - 1]);
+  }
+  return sampled;
+}
+
+function fillDailySeriesRange(series, fromIso, toIso) {
+  const rows = Array.isArray(series) ? series : [];
+  if (!fromIso || !toIso) return rows;
+  const start = new Date(`${fromIso}T12:00:00.000Z`);
+  const end = new Date(`${toIso}T12:00:00.000Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return rows;
+
+  const valueByPeriod = new Map(rows.map((row) => [row.period, Number(row.plays || 0)]));
+  const filled = [];
+  const cursor = new Date(start.getTime());
+  while (cursor <= end) {
+    const iso = cursor.toISOString().slice(0, 10);
+    filled.push({ period: iso, plays: Number(valueByPeriod.get(iso) || 0) });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return filled;
 }
 
 function toCumulativeSeries(series) {
@@ -197,43 +292,46 @@ function renderTrackMetadata(metadata) {
   }
 }
 
-function renderLineChart(container, series, bucket = 'day') {
+function renderLineChart(container, series, bucket = 'day', options = {}) {
   container.innerHTML = '';
-  if (!series?.length) {
-    container.textContent = 'Keine Daten im Zeitraum.';
+  const rows = downsampleSeries(series || [], options.maxPoints || 220);
+  if (!rows.length) {
+    renderChartEmpty(container, 'Keine Daten im Zeitraum.');
     return;
   }
 
-  const width = 900;
-  const height = 250;
-  const pad = { t: 18, r: 16, b: 46, l: 54 };
+  appendChartStats(container, options.stats);
+
+  const width = Math.max(900, rows.length * 26);
+  const height = 260;
+  const pad = { t: 18, r: 36, b: 50, l: 60 };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
-  const maxY = Math.max(...series.map((s) => Number(s.plays || 0)), 1);
-  const step = series.length > 1 ? w / (series.length - 1) : w;
+  const maxY = Math.max(...rows.map((s) => Number(s.plays || 0)), 1);
+  const yAxis = buildNiceYAxis(maxY, 4);
+  const step = rows.length > 1 ? w / (rows.length - 1) : 0;
   const svg = makeSvg(width, height);
   const axisColor = '#7f95aa';
-  const pointColor = '#0ea5a4';
+  const gridColor = 'rgba(127,149,170,0.25)';
+  const pointColor = options.color || '#0ea5a4';
 
   svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: pad.t, x2: pad.l, y2: pad.t + h, stroke: axisColor, 'stroke-width': 1 }));
   svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: pad.t + h, x2: pad.l + w, y2: pad.t + h, stroke: axisColor, 'stroke-width': 1 }));
 
-  const tickCountY = 4;
-  for (let i = 0; i <= tickCountY; i += 1) {
-    const val = Math.round((maxY * i) / tickCountY);
-    const y = pad.t + h - (h * i) / tickCountY;
-    svg.appendChild(makeSvgEl('line', { x1: pad.l - 4, y1: y, x2: pad.l, y2: y, stroke: axisColor }));
+  yAxis.ticks.forEach((val) => {
+    const y = pad.t + h - (val / yAxis.maxTick) * h;
+    svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: y, x2: pad.l + w, y2: y, stroke: gridColor, 'stroke-width': 1 }));
     const label = makeSvgEl('text', { x: pad.l - 8, y: y + 4, 'font-size': 11, 'text-anchor': 'end' });
-    label.textContent = val.toLocaleString('de-DE');
+    label.textContent = formatPlays(val);
     svg.appendChild(label);
-  }
+  });
 
-  const xTickIndexes = Array.from(new Set([0, Math.floor((series.length - 1) / 2), series.length - 1])).filter((i) => i >= 0);
-  xTickIndexes.forEach((i) => {
-    const x = pad.l + i * step;
+  buildXTickIndexes(rows.length, 6).forEach((i, idx, all) => {
+    const x = rows.length > 1 ? pad.l + i * step : pad.l + w / 2;
     svg.appendChild(makeSvgEl('line', { x1: x, y1: pad.t + h, x2: x, y2: pad.t + h + 4, stroke: axisColor }));
-    const label = makeSvgEl('text', { x, y: pad.t + h + 17, 'font-size': 11, 'text-anchor': 'middle' });
-    label.textContent = formatSeriesPeriod(series[i]?.period, bucket);
+    const anchor = idx === 0 ? 'start' : idx === all.length - 1 ? 'end' : 'middle';
+    const label = makeSvgEl('text', { x, y: pad.t + h + 17, 'font-size': 11, 'text-anchor': anchor });
+    label.textContent = formatSeriesPeriod(rows[i]?.period, bucket, true);
     svg.appendChild(label);
   });
 
@@ -253,12 +351,23 @@ function renderLineChart(container, series, bucket = 'day') {
 
   let d = '';
   const points = [];
-  series.forEach((p, i) => {
-    const x = pad.l + i * step;
-    const y = pad.t + h - (Number(p.plays || 0) / maxY) * h;
+  rows.forEach((p, i) => {
+    const x = rows.length > 1 ? pad.l + i * step : pad.l + w / 2;
+    const y = pad.t + h - (Number(p.plays || 0) / yAxis.maxTick) * h;
     points.push({ x, y, period: p.period, plays: Number(p.plays || 0) });
     d += `${i === 0 ? 'M' : 'L'} ${x} ${y} `;
   });
+
+  if (options.showArea && points.length > 1) {
+    const first = points[0];
+    const last = points[points.length - 1];
+    const area = makeSvgEl('path', {
+      d: `${d.trim()} L ${last.x} ${pad.t + h} L ${first.x} ${pad.t + h} Z`,
+      fill: 'rgba(20,184,166,0.12)',
+      stroke: 'none'
+    });
+    svg.appendChild(area);
+  }
 
   const path = makeSvgEl('path', {
     d: d.trim(),
@@ -269,10 +378,108 @@ function renderLineChart(container, series, bucket = 'day') {
   svg.appendChild(path);
 
   points.forEach((p) => {
+    const hit = makeSvgEl('circle', { cx: p.x, cy: p.y, r: 10, fill: 'transparent' });
     const dot = makeSvgEl('circle', { cx: p.x, cy: p.y, r: 3.8, fill: pointColor });
+    svg.appendChild(hit);
     svg.appendChild(dot);
-    bindChartTooltip(container, dot, () => `${formatSeriesPeriod(p.period, bucket)}: ${p.plays.toLocaleString('de-DE')} Plays`);
+    bindChartTooltip(container, hit, () => `${formatSeriesPeriod(p.period, bucket)}: ${formatPlays(p.plays)} Plays`);
   });
+
+  const last = points[points.length - 1];
+  if (last) {
+    const label = makeSvgEl('text', {
+      x: Math.min(last.x + 8, pad.l + w - 8),
+      y: Math.max(pad.t + 12, last.y - 8),
+      'font-size': 11,
+      'text-anchor': 'start'
+    });
+    label.textContent = formatPlays(last.plays);
+    svg.appendChild(label);
+  }
+
+  container.appendChild(svg);
+
+  if ((series || []).length > rows.length) {
+    const note = document.createElement('div');
+    note.className = 'chart-note';
+    note.textContent = `Angezeigt: ${rows.length} von ${series.length} Punkten (für bessere Lesbarkeit).`;
+    container.appendChild(note);
+  }
+}
+
+function renderDailyBarChart(container, series, bucket = 'day', options = {}) {
+  container.innerHTML = '';
+  const rows = Array.isArray(series) ? series : [];
+  if (!rows.length) {
+    renderChartEmpty(container, 'Keine Tagesdaten im Zeitraum.');
+    return;
+  }
+
+  appendChartStats(container, options.stats);
+
+  const width = Math.max(900, rows.length * 24);
+  const height = 260;
+  const pad = { t: 16, r: 24, b: 52, l: 60 };
+  const w = width - pad.l - pad.r;
+  const h = height - pad.t - pad.b;
+  const maxY = Math.max(...rows.map((row) => Number(row.plays || 0)), 1);
+  const yAxis = buildNiceYAxis(maxY, 4);
+  const step = rows.length > 1 ? w / (rows.length - 1) : 0;
+  const barWidth = rows.length > 1 ? Math.max(4, Math.min(step * 0.7, 22)) : 28;
+  const axisColor = '#7f95aa';
+  const gridColor = 'rgba(127,149,170,0.25)';
+  const barColor = '#f59e0b';
+  const svg = makeSvg(width, height);
+
+  svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: pad.t, x2: pad.l, y2: pad.t + h, stroke: axisColor, 'stroke-width': 1 }));
+  svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: pad.t + h, x2: pad.l + w, y2: pad.t + h, stroke: axisColor, 'stroke-width': 1 }));
+
+  yAxis.ticks.forEach((val) => {
+    const y = pad.t + h - (val / yAxis.maxTick) * h;
+    svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: y, x2: pad.l + w, y2: y, stroke: gridColor, 'stroke-width': 1 }));
+    const label = makeSvgEl('text', { x: pad.l - 8, y: y + 4, 'font-size': 11, 'text-anchor': 'end' });
+    label.textContent = formatPlays(val);
+    svg.appendChild(label);
+  });
+
+  buildXTickIndexes(rows.length, 7).forEach((i, idx, all) => {
+    const x = rows.length > 1 ? pad.l + i * step : pad.l + w / 2;
+    svg.appendChild(makeSvgEl('line', { x1: x, y1: pad.t + h, x2: x, y2: pad.t + h + 4, stroke: axisColor }));
+    const anchor = idx === 0 ? 'start' : idx === all.length - 1 ? 'end' : 'middle';
+    const label = makeSvgEl('text', { x, y: pad.t + h + 17, 'font-size': 11, 'text-anchor': anchor });
+    label.textContent = formatSeriesPeriod(rows[i]?.period, bucket, true);
+    svg.appendChild(label);
+  });
+
+  rows.forEach((row, i) => {
+    const xCenter = rows.length > 1 ? pad.l + i * step : pad.l + w / 2;
+    const val = Number(row.plays || 0);
+    const barH = (val / yAxis.maxTick) * h;
+    const y = pad.t + h - barH;
+    const rect = makeSvgEl('rect', {
+      x: xCenter - barWidth / 2,
+      y,
+      width: barWidth,
+      height: Math.max(1, barH),
+      rx: 3,
+      fill: barColor
+    });
+    svg.appendChild(rect);
+    bindChartTooltip(container, rect, () => `${formatSeriesPeriod(row.period, bucket)}: ${formatPlays(val)} Plays`);
+  });
+
+  const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 8, 'font-size': 12, 'text-anchor': 'middle' });
+  xLabel.textContent = 'Zeitraum';
+  svg.appendChild(xLabel);
+  const yLabel = makeSvgEl('text', {
+    x: 16,
+    y: pad.t + h / 2,
+    'font-size': 12,
+    'text-anchor': 'middle',
+    transform: `rotate(-90 16 ${pad.t + h / 2})`
+  });
+  yLabel.textContent = 'Plays / Tag';
+  svg.appendChild(yLabel);
 
   container.appendChild(svg);
 }
@@ -538,18 +745,40 @@ function renderStationCompareChart(container, totalRows, yesterdayRows) {
 
 function renderBarChart(container, rows) {
   container.innerHTML = '';
-  if (!rows?.length) {
-    container.textContent = 'Keine Senderdaten im Zeitraum.';
+  const prepared = (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      stationId: row.station_id || row.stationId || '',
+      stationName: row.station_name || row.stationName || row.station_id || row.stationId || 'Unbekannt',
+      plays: Number(row.plays || 0)
+    }))
+    .filter((row) => row.plays > 0)
+    .sort((a, b) => b.plays - a.plays)
+    .slice(0, 15);
+
+  if (!prepared.length) {
+    renderChartEmpty(container, 'Keine Senderdaten im Zeitraum.');
     return;
   }
 
+  const totalPlays = prepared.reduce((sum, row) => sum + row.plays, 0);
+  const topStation = prepared[0];
+  const topThree = prepared.slice(0, 3).reduce((sum, row) => sum + row.plays, 0);
+  appendChartStats(container, [
+    { label: 'Sender', value: formatPlays(prepared.length) },
+    { label: 'Top-Sender', value: `${topStation.stationName} (${formatPlays(topStation.plays)})` },
+    { label: 'Top 3 Anteil', value: `${totalPlays ? ((topThree / totalPlays) * 100).toFixed(1) : '0.0'}%` }
+  ]);
+
   const width = 980;
-  const height = Math.max(320, rows.length * 28 + 56);
-  const pad = { t: 16, r: 80, b: 26, l: 190 };
+  const height = Math.max(340, prepared.length * 30 + 70);
+  const longestLabel = prepared.reduce((maxLen, row) => Math.max(maxLen, row.stationName.length), 0);
+  const padLeft = Math.min(280, Math.max(170, longestLabel * 7 + 24));
+  const pad = { t: 18, r: 132, b: 30, l: padLeft };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
-  const max = Math.max(...rows.map((r) => Number(r.plays || 0)), 1);
-  const bar = h / rows.length;
+  const max = Math.max(...prepared.map((r) => r.plays), 1);
+  const xAxis = buildNiceYAxis(max, 4);
+  const bar = h / prepared.length;
   const svg = makeSvg(width, height);
 
   const axisY = makeSvgEl('line', { x1: pad.l, x2: pad.l, y1: pad.t, y2: pad.t + h, stroke: '#7f95aa', 'stroke-width': 1 });
@@ -558,18 +787,25 @@ function renderBarChart(container, rows) {
   const axisX = makeSvgEl('line', { x1: pad.l, x2: pad.l + w, y1: pad.t + h, y2: pad.t + h, stroke: '#7f95aa', 'stroke-width': 1 });
   svg.appendChild(axisX);
 
-  const tickCount = 4;
-  for (let i = 0; i <= tickCount; i += 1) {
-    const val = Math.round((max * i) / tickCount);
-    const x = pad.l + (w * i) / tickCount;
+  xAxis.ticks.forEach((val) => {
+    const x = pad.l + (val / xAxis.maxTick) * w;
+    const grid = makeSvgEl('line', {
+      x1: x,
+      x2: x,
+      y1: pad.t,
+      y2: pad.t + h,
+      stroke: 'rgba(127,149,170,0.22)',
+      'stroke-width': 1
+    });
+    svg.appendChild(grid);
 
     const tick = makeSvgEl('line', { x1: x, x2: x, y1: pad.t + h, y2: pad.t + h + 4, stroke: '#7f95aa' });
     svg.appendChild(tick);
 
     const label = makeSvgEl('text', { x, y: pad.t + h + 16, 'font-size': 11, 'text-anchor': 'middle' });
-    label.textContent = val.toLocaleString('de-DE');
+    label.textContent = formatPlays(val);
     svg.appendChild(label);
-  }
+  });
 
   const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 6, 'font-size': 12, 'text-anchor': 'middle' });
   xLabel.textContent = 'Anzahl Plays';
@@ -585,15 +821,14 @@ function renderBarChart(container, rows) {
   yLabel.textContent = 'Sender';
   svg.appendChild(yLabel);
 
-  rows.forEach((row, i) => {
+  prepared.forEach((row, i) => {
     const y = pad.t + i * bar + 4;
-    const bw = (Number(row.plays || 0) / max) * (w - 8);
-
-    const stationName = row.station_name || row.station_id;
-    const playsValue = Number(row.plays || 0).toLocaleString('de-DE');
+    const bw = (Number(row.plays || 0) / xAxis.maxTick) * (w - 8);
+    const playsValue = formatPlays(row.plays);
+    const pct = totalPlays ? ((row.plays / totalPlays) * 100).toFixed(1) : '0.0';
 
     const label = makeSvgEl('text', { x: 6, y: y + bar / 2 + 4, 'font-size': 12 });
-    label.textContent = row.station_name || row.station_id;
+    label.textContent = row.stationName;
 
     const rect = makeSvgEl('rect', {
       x: pad.l,
@@ -609,12 +844,12 @@ function renderBarChart(container, rows) {
       y: y + Math.max(10, bar - 8) / 2 + 4,
       'font-size': 11
     });
-    val.textContent = playsValue;
+    val.textContent = `${playsValue} (${pct}%)`;
 
     svg.appendChild(label);
     svg.appendChild(rect);
     svg.appendChild(val);
-    bindChartTooltip(container, rect, () => `${stationName}: ${playsValue} Plays`);
+    bindChartTooltip(container, rect, () => `${row.stationName}: ${playsValue} Plays (${pct}%)`);
   });
 
   container.appendChild(svg);
@@ -726,7 +961,7 @@ async function loadTracks() {
     qs('selectedMeta').textContent = 'Kein passender Song im aktuellen Filter gefunden.';
     renderTrackMetadata(null);
     renderLineChart(qs('seriesChart'), [], qs('bucketSelect')?.value || 'day');
-    renderLineChart(qs('seriesByStationChart'), [], 'day');
+    renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
     renderBarChart(qs('stationsChart'), []);
   }
 }
@@ -812,7 +1047,7 @@ async function loadDetails() {
       qs('totalAll').textContent = '-';
       renderTrackMetadata(null);
       renderLineChart(qs('seriesChart'), [], 'day');
-      renderLineChart(qs('seriesByStationChart'), [], 'day');
+      renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
       renderBarChart(qs('stationsChart'), []);
       return;
     }
@@ -829,7 +1064,7 @@ async function loadDetails() {
     qs('totalAll').textContent = '-';
     renderTrackMetadata(null);
     renderLineChart(qs('seriesChart'), [], 'day');
-    renderLineChart(qs('seriesByStationChart'), [], 'day');
+    renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
     renderBarChart(qs('stationsChart'), []);
     return;
   }
@@ -860,8 +1095,34 @@ async function loadDetails() {
   qs('totalAll').textContent = Number(totals.totals?.allTime || 0).toLocaleString('de-DE');
   renderTrackMetadata(metadata);
 
-  renderLineChart(qs('seriesChart'), toCumulativeSeries(cumulativeSeries.series || []), 'day');
-  renderLineChart(qs('seriesByStationChart'), dailySeries.series || [], 'day');
+  const cumulativeRows = toCumulativeSeries(cumulativeSeries.series || []);
+  const cumulativeStart = Number(cumulativeRows[0]?.plays || 0);
+  const cumulativeEnd = Number(cumulativeRows[cumulativeRows.length - 1]?.plays || 0);
+  renderLineChart(qs('seriesChart'), cumulativeRows, 'day', {
+    showArea: true,
+    color: '#0ea5a4',
+    stats: [
+      { label: 'Stand', value: `${formatPlays(cumulativeEnd)} Plays` },
+      { label: 'Zuwachs', value: `+${formatPlays(Math.max(0, cumulativeEnd - cumulativeStart))}` },
+      { label: 'Punkte', value: formatPlays(cumulativeRows.length) }
+    ]
+  });
+
+  const filledDailyRows = fillDailySeriesRange(dailySeries.series || [], dailyFrom, cappedTo);
+  const totalDaily = filledDailyRows.reduce((sum, row) => sum + Number(row.plays || 0), 0);
+  const avgDaily = filledDailyRows.length ? totalDaily / filledDailyRows.length : 0;
+  const peakDaily = filledDailyRows.reduce((best, row) => {
+    const plays = Number(row.plays || 0);
+    if (!best || plays > best.plays) return { period: row.period, plays };
+    return best;
+  }, null);
+  renderDailyBarChart(qs('seriesByStationChart'), filledDailyRows, 'day', {
+    stats: [
+      { label: 'Tage', value: formatPlays(filledDailyRows.length) },
+      { label: 'Ø Plays/Tag', value: avgDaily.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) },
+      { label: 'Peak', value: peakDaily ? `${formatSeriesPeriod(peakDaily.period, 'day', true)} (${formatPlays(peakDaily.plays)})` : '-' }
+    ]
+  });
   renderBarChart(qs('stationsChart'), stationsData.stations || []);
 }
 

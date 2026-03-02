@@ -21,9 +21,105 @@ stations:
     fetcher: "http"
     timezone: "Europe/Berlin"
 
+  - id: "1live_diggi"
+    name: "1Live Diggi"
+    playlist_url: "https://onlineradiobox.com/de/1livediggi/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/einslivediggi/playlist/"
+      - "https://www.phonostar.de/radio/1live-diggi/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
   - id: "bigfm"
     name: "bigFM"
     playlist_url: "https://onlineradiobox.com/de/bigfm/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "wdr2"
+    name: "WDR2"
+    playlist_url: "https://onlineradiobox.com/de/wdr2/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/wdr2/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "rpr1"
+    name: "RPR1"
+    playlist_url: "https://onlineradiobox.com/de/rpr1/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/rpr1/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "radio_regenbogen"
+    name: "Radio Regenbogen"
+    playlist_url: "https://onlineradiobox.com/de/radioregenbogen/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/regenbogen/playlist/"
+      - "https://www.phonostar.de/radio/radio-regenbogen/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "antenne_bayern"
+    name: "Antenne Bayern"
+    playlist_url: "https://onlineradiobox.com/de/antennebayern/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/antenne-bayern/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "radio_ffn"
+    name: "radio ffn"
+    playlist_url: "https://onlineradiobox.com/de/radioffn/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/ffn/playlist/"
+      - "https://www.phonostar.de/radio/radio-ffn/titel"
+      - "https://www.phonostar.de/radio/ffn/titel"
+    parser: "generic_html_or_onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "mdr_jump"
+    name: "MDR Jump"
+    playlist_url: "https://onlineradiobox.com/de/mdrjump/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/jump/playlist/"
+      - "https://www.phonostar.de/radio/mdr-jump/titel"
+      - "https://www.phonostar.de/radio/mdr-jump-live/titel"
+    parser: "generic_html_or_onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "mdr_sputnik"
+    name: "MDR Sputnik"
+    playlist_url: "https://onlineradiobox.com/de/mdrsputnik/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/mdr-sputnik/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "rsh"
+    name: "R.SH"
+    playlist_url: "https://onlineradiobox.com/de/rsh/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/rsh/titel"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "bremen_next"
+    name: "Bremen NEXT"
+    playlist_url: "https://onlineradiobox.com/de/bremennext/playlist/"
+    fallback_urls:
+      - "https://www.phonostar.de/radio/bremen-next/titel"
     parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"

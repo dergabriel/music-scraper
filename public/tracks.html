@@ -54,9 +54,24 @@
                 <option value="100" selected>100</option>
                 <option value="250">250</option>
                 <option value="500">500</option>
+                <option value="1000">1000</option>
+                <option value="all">Insgesamt</option>
               </select>
             </div>
-            <div class="col-4 col-lg-2">
+            <div class="col-8 col-lg-2">
+              <label class="form-label">Sortierung</label>
+              <select id="sortSelect" class="form-select">
+                <option value="plays_per_day_desc" selected>Plays/Tag (absteigend)</option>
+                <option value="plays_per_day_asc">Plays/Tag (aufsteigend)</option>
+                <option value="total_plays_desc">Plays gesamt (absteigend)</option>
+                <option value="total_plays_asc">Plays gesamt (aufsteigend)</option>
+                <option value="last_played_desc">Letztes Play (neueste zuerst)</option>
+                <option value="last_played_asc">Letztes Play (aelteste zuerst)</option>
+                <option value="artist_asc">Artist (A-Z)</option>
+                <option value="artist_desc">Artist (Z-A)</option>
+              </select>
+            </div>
+            <div class="col-4 col-lg-1">
               <button id="loadBtn" class="btn btn-primary w-100" type="button">Laden</button>
             </div>
           </div>
@@ -76,6 +91,7 @@
                     <tr>
                       <th>Track</th>
                       <th>Plays</th>
+                      <th>Plays/Tag</th>
                       <th>Erstes Play</th>
                       <th>Letztes Play</th>
                       <th>Analyse</th>

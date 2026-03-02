@@ -110,8 +110,15 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     tracks: (req, res) => {
       const q = String(safeQueryValue(req.query.q) ?? '').trim();
       const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-      const rawLimit = Number(safeQueryValue(req.query.limit) ?? 100);
-      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 500)) : 100;
+      const rawLimitParam = safeQueryValue(req.query.limit);
+      const limitParam = rawLimitParam == null ? '' : String(rawLimitParam).trim().toLowerCase();
+      let limit = 100;
+      if (limitParam === 'all' || limitParam === '0' || limitParam === 'max') {
+        limit = null;
+      } else if (limitParam) {
+        const rawLimit = Number(limitParam);
+        limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 100;
+      }
 
       const db = openDb(dbPath);
       try {

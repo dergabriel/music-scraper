@@ -29,6 +29,55 @@ function fmtDate(iso) {
   return iso ? new Date(iso).toLocaleString('de-DE') : '-';
 }
 
+function fmtPlaysPerDay(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return n.toLocaleString('de-DE', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function sortRows(rows, sortMode) {
+  const out = [...rows];
+  const valueNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const valueTime = (v) => {
+    const t = Date.parse(v || '');
+    return Number.isFinite(t) ? t : 0;
+  };
+  const valueText = (v) => String(v || '').toLocaleLowerCase('de-DE');
+
+  switch (sortMode) {
+    case 'plays_per_day_asc':
+      out.sort((a, b) => valueNum(a.plays_per_day) - valueNum(b.plays_per_day) || valueNum(a.total_plays) - valueNum(b.total_plays));
+      break;
+    case 'total_plays_desc':
+      out.sort((a, b) => valueNum(b.total_plays) - valueNum(a.total_plays) || valueNum(b.plays_per_day) - valueNum(a.plays_per_day));
+      break;
+    case 'total_plays_asc':
+      out.sort((a, b) => valueNum(a.total_plays) - valueNum(b.total_plays) || valueNum(a.plays_per_day) - valueNum(b.plays_per_day));
+      break;
+    case 'last_played_desc':
+      out.sort((a, b) => valueTime(b.last_played_at_utc) - valueTime(a.last_played_at_utc));
+      break;
+    case 'last_played_asc':
+      out.sort((a, b) => valueTime(a.last_played_at_utc) - valueTime(b.last_played_at_utc));
+      break;
+    case 'artist_asc':
+      out.sort((a, b) => valueText(a.artist).localeCompare(valueText(b.artist), 'de-DE'));
+      break;
+    case 'artist_desc':
+      out.sort((a, b) => valueText(b.artist).localeCompare(valueText(a.artist), 'de-DE'));
+      break;
+    case 'plays_per_day_desc':
+    default:
+      out.sort((a, b) => valueNum(b.plays_per_day) - valueNum(a.plays_per_day) || valueNum(b.total_plays) - valueNum(a.total_plays));
+      break;
+  }
+
+  return out;
+}
+
 function weekStartIso(date = new Date()) {
   const d = new Date(date);
   const day = d.getDay();
@@ -72,14 +121,18 @@ function renderStats(rows) {
 
 async function loadTracks() {
   const params = new URLSearchParams();
-  params.set('limit', qs('limitSelect').value);
+  const selectedLimit = qs('limitSelect').value;
+  if (selectedLimit) {
+    params.set('limit', selectedLimit === 'all' ? 'all' : selectedLimit);
+  }
   const q = qs('searchInput').value.trim();
   const stationId = qs('stationSelect').value;
+  const sortMode = qs('sortSelect').value || 'plays_per_day_desc';
   if (q) params.set('q', q);
   if (stationId) params.set('stationId', stationId);
 
   qs('state').textContent = 'Lade Daten...';
-  const rows = await apiFetch(`/api/tracks?${params.toString()}`);
+  const rows = sortRows(await apiFetch(`/api/tracks?${params.toString()}`), sortMode);
 
   const tbody = qs('tracksTable').querySelector('tbody');
   tbody.innerHTML = '';
@@ -89,6 +142,7 @@ async function loadTracks() {
     tr.innerHTML = `
       <td><strong>${r.artist}</strong><br><small>${r.title}</small></td>
       <td>${Number(r.total_plays || 0).toLocaleString('de-DE')}</td>
+      <td>${fmtPlaysPerDay(r.plays_per_day)}</td>
       <td>${fmtDate(r.first_played_at_utc)}</td>
       <td>${fmtDate(r.last_played_at_utc)}</td>
       <td><a href="/dashboard?trackKey=${encodeURIComponent(r.track_key)}">Öffnen</a></td>
@@ -163,6 +217,9 @@ async function init() {
     qs('state').textContent = `Fehler: ${msg}`;
   }));
   qs('limitSelect').addEventListener('change', () => runSafe(loadTracks, (msg) => {
+    qs('state').textContent = `Fehler: ${msg}`;
+  }));
+  qs('sortSelect').addEventListener('change', () => runSafe(loadTracks, (msg) => {
     qs('state').textContent = `Fehler: ${msg}`;
   }));
   qs('loadBtn').addEventListener('click', () => runSafe(loadTracks, (msg) => {

@@ -10,6 +10,7 @@ import {
   runStationReport,
   runCoverageAudit,
   runBackpoolAnalysis,
+  runItunesCanonicalMaintenance,
   runTrackOrientationMaintenance,
   runNoisePlayCleanup,
   runPromoMarkerMaintenance
@@ -177,6 +178,12 @@ program
         maxPairs: Number(opts.maxPairs),
         logger
       });
+      runItunesCanonicalMaintenance({
+        dbPath: opts.db,
+        dryRun: Boolean(opts.dryRun),
+        maxPairs: Number(opts.maxPairs),
+        logger
+      });
       const result = runTrackOrientationMaintenance({
         dbPath: opts.db,
         dryRun: Boolean(opts.dryRun),
@@ -203,6 +210,7 @@ program
       .then(async () => {
         runNoisePlayCleanup({ dbPath: opts.db, logger });
         runPromoMarkerMaintenance({ dbPath: opts.db, logger });
+        runItunesCanonicalMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
@@ -270,6 +278,7 @@ program
         await runIngest({ configPath: opts.config, dbPath: opts.db, logger });
         runNoisePlayCleanup({ dbPath: opts.db, logger });
         runPromoMarkerMaintenance({ dbPath: opts.db, logger });
+        runItunesCanonicalMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({

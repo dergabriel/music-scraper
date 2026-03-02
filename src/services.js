@@ -175,6 +175,58 @@ function preferredMetadataRow(a, b) {
   return metadataQuality(a) >= metadataQuality(b) ? a : b;
 }
 
+function parsePayloadJsonSafe(payloadJson) {
+  if (!payloadJson) return null;
+  try {
+    const parsed = JSON.parse(payloadJson);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractItunesCanonicalName(metaRow, minConfidence = 0.72) {
+  if (!metaRow) return null;
+  const verified = Number(metaRow.verified_exists);
+  if (!Number.isFinite(verified) || verified !== 1) return null;
+  const confidence = Number(metaRow.verification_confidence);
+  if (!Number.isFinite(confidence) || confidence < minConfidence) return null;
+
+  const payload = parsePayloadJsonSafe(metaRow.payload_json);
+  const topArtist = String(payload?.topArtist ?? '').trim();
+  const topTitle = String(payload?.topTitle ?? '').trim();
+  if (!topArtist || !topTitle) return null;
+
+  return {
+    artist: topArtist,
+    title: topTitle,
+    confidence
+  };
+}
+
+function artistTokenSet(value) {
+  const stop = new Set(['feat', 'ft', 'featuring', 'and', 'und', 'x', 'vs', 'with']);
+  return new Set(
+    String(value ?? '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .split(/\s+/)
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2 && !stop.has(x))
+  );
+}
+
+function artistOverlapRatio(a, b) {
+  const aa = artistTokenSet(a);
+  const bb = artistTokenSet(b);
+  if (!aa.size || !bb.size) return 0;
+  let common = 0;
+  for (const token of aa) {
+    if (bb.has(token)) common += 1;
+  }
+  return common / Math.max(1, Math.min(aa.size, bb.size));
+}
+
 export function runTrackOrientationMaintenance({
   dbPath,
   dryRun = false,
@@ -345,6 +397,23 @@ export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
     or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%installieren sie gratis%'
     or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%onlineradio deutschland%'
     or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%am mikrofon%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%anruf im verkehrszentrum%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%hotline%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%kontakt zur%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%wochenkracher%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%marken-discount%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%die abendshow%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%nachrichten%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%werbeblock%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%commercial%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%promo%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%spot%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '% sec%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '% sek%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%kw %'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%mehr musik%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%mehr abwechslung%'
+    or lower(artist_raw || ' ' || title_raw || ' ' || artist || ' ' || title) like '%niedersachs%'
   `;
 
   const found = db.prepare(`select count(*) as c from plays where ${whereClause}`).get()?.c ?? 0;
@@ -496,6 +565,177 @@ export function runPromoMarkerMaintenance({ dbPath, dryRun = false, maxPairs = 5
     dryRun
   };
   logger?.info(result, 'promo/quote marker maintenance completed');
+  return result;
+}
+
+export function runItunesCanonicalMaintenance({
+  dbPath,
+  dryRun = false,
+  maxPairs = 5000,
+  minConfidence = 0.72,
+  minArtistOverlap = 0.45,
+  logger
+}) {
+  const db = openDb(dbPath);
+  const trackRows = db.prepare(`
+    select
+      track_key,
+      min(artist) as artist,
+      min(title) as title,
+      count(*) as plays
+    from plays
+    group by track_key
+  `).all();
+  const metadataRows = db.prepare('select * from track_metadata').all();
+  const metadataByTrackKey = new Map(metadataRows.map((row) => [row.track_key, row]));
+
+  const canonicalByTitle = new Map();
+  for (const row of trackRows) {
+    const meta = metadataByTrackKey.get(row.track_key) ?? null;
+    const itunes = extractItunesCanonicalName(meta, minConfidence);
+    if (!itunes) continue;
+
+    const normalizedCanonical = normalizeArtistTitle(itunes.artist, itunes.title);
+    if (!normalizedCanonical.artist || !normalizedCanonical.title) continue;
+    const titleKey = normalizedCanonical.title;
+    const seed = {
+      trackKey: normalizedCanonical.trackKey,
+      artist: normalizedCanonical.artist,
+      title: normalizedCanonical.title,
+      itunesArtist: itunes.artist,
+      confidence: itunes.confidence,
+      plays: Number(row.plays || 0)
+    };
+    const existing = canonicalByTitle.get(titleKey);
+    if (!existing ||
+      seed.confidence > existing.confidence ||
+      (seed.confidence === existing.confidence && seed.plays > existing.plays)
+    ) {
+      canonicalByTitle.set(titleKey, seed);
+    }
+  }
+
+  const bestByOldKey = new Map();
+  for (const row of trackRows) {
+    const normalizedRow = normalizeArtistTitle(row.artist, row.title);
+    if (!normalizedRow.artist || !normalizedRow.title) continue;
+    const candidate = canonicalByTitle.get(normalizedRow.title);
+    if (!candidate) continue;
+
+    const overlap = artistOverlapRatio(row.artist, candidate.itunesArtist);
+    if (overlap < minArtistOverlap) continue;
+    if (candidate.trackKey === row.track_key) continue;
+
+    const plays = Number(row.plays || 0);
+    const score = (candidate.confidence * 2) + overlap + (Math.log1p(plays) / 10);
+    const current = bestByOldKey.get(row.track_key);
+    if (!current || score > current.score) {
+      bestByOldKey.set(row.track_key, {
+        oldKey: row.track_key,
+        newKey: candidate.trackKey,
+        artist: candidate.artist,
+        title: candidate.title,
+        plays,
+        score
+      });
+    }
+  }
+
+  const mappings = Array.from(bestByOldKey.values())
+    .sort((a, b) => b.plays - a.plays)
+    .slice(0, Math.max(1, Number(maxPairs) || 5000));
+
+  let merged = 0;
+  let playsUpdated = 0;
+  let metadataUpdated = 0;
+  let dailyRowsRebuilt = 0;
+
+  if (!dryRun && mappings.length > 0) {
+    const tx = db.transaction(() => {
+      for (const map of mappings) {
+        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
+        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
+
+        const changes = db.prepare(`
+          update plays
+          set track_key = ?, artist = ?, title = ?
+          where track_key = ?
+        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
+        playsUpdated += changes;
+
+        const dailyByStation = db.prepare(`
+          select date_berlin, station_id, sum(plays) as plays
+          from daily_track_stats
+          where track_key in (?, ?)
+          group by date_berlin, station_id
+        `).all(map.newKey, map.oldKey);
+        if (dailyByStation.length) {
+          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertDaily = db.prepare(`
+            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyByStation) {
+            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
+            dailyRowsRebuilt += 1;
+          }
+        }
+
+        const dailyOverall = db.prepare(`
+          select date_berlin, sum(plays) as plays
+          from daily_overall_track_stats
+          where track_key in (?, ?)
+          group by date_berlin
+        `).all(map.newKey, map.oldKey);
+        if (dailyOverall.length) {
+          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertOverall = db.prepare(`
+            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyOverall) {
+            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
+          }
+        }
+
+        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
+
+        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+        if (chosenMeta) {
+          const mergedMeta = {
+            ...chosenMeta,
+            track_key: map.newKey,
+            artist: map.artist,
+            title: map.title
+          };
+          upsertTrackMetadata(db, mergedMeta);
+          metadataByTrackKey.set(map.newKey, mergedMeta);
+          metadataUpdated += 1;
+        }
+        if (loserMeta) {
+          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
+          metadataByTrackKey.delete(map.oldKey);
+        }
+
+        merged += 1;
+      }
+    });
+    tx();
+  }
+
+  db.close();
+  const result = {
+    candidates: bestByOldKey.size,
+    selectedPairs: mappings.length,
+    merged,
+    playsUpdated,
+    metadataUpdated,
+    dailyRowsRebuilt,
+    dryRun,
+    minConfidence,
+    minArtistOverlap
+  };
+  logger?.info(result, 'itunes canonical maintenance completed');
   return result;
 }
 

@@ -12,6 +12,20 @@ const JINGLE_PATTERN =
 const STATION_PROMO_PATTERN =
   /\b(deutschlands?\s+bigg?ste|radio|sender|station|berlin|baden[-\s]?württemberg|nrw|hamburg|sachsen|bayern|beats|hits)\b/i;
 const UNKNOWN_TRACK_PATTERN = /^(unknown|unbekannt|n\/a|na)$/i;
+const SERVICE_ANNOUNCEMENT_PATTERN =
+  /\b(anruf(?:en)?\s+im\s+verkehrszentrum|hotline|kontakt\s+zur|verkehrszentrum|staumelder|verkehrsservice|blitzer[-\s]?hotline)\b/i;
+const PHONE_NUMBER_PATTERN =
+  /\b(?:\+?\d{2,3}[\s\-]?)?(?:0\d{2,5}[\s\-]?\d{3,}(?:[\s\-]?\d{1,})*)\b/;
+const AD_BRAND_PATTERN =
+  /\b(wochenkracher|rabatt|discount|angebot|kampagne|spot|commercial|sponsored|sponsor|marken[-\s]?discount)\b/i;
+const BROADCAST_BULLETIN_PATTERN =
+  /\b(abendshow|morning show|nachrichten|news|ticker|sondersendung|magazin|interview|kommentar)\b/i;
+const AD_DURATION_PATTERN =
+  /\b(?:\d{1,3}\s*(?:sec|sek|sekunden)|kw\s*\d{1,2})\b/i;
+const NON_MUSIC_CONTEXT_PATTERN =
+  /\((handel|retail|werbung|promo)\)/i;
+const STATION_SLOGAN_PATTERN =
+  /\bmehr\s+musik\b.*\bmehr\s+abwechslung\b|\bmehr\s+\w+\b.*\bmehr\s+\w+\b.*\bmehr\s+\w+\b|\bniedersachs(?:en|e)\b/i;
 const GENERIC_STATION_TOKENS = new Set([
   'radio',
   'sender',
@@ -20,6 +34,12 @@ const GENERIC_STATION_TOKENS = new Set([
   'stream',
   'hitradio',
   'live'
+]);
+const GERMAN_STOPWORDS = new Set([
+  'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'einem',
+  'und', 'oder', 'aber', 'im', 'in', 'am', 'an', 'auf', 'mit', 'von', 'zu',
+  'für', 'fuer', 'bei', 'nach', 'vor', 'als', 'ist', 'sind', 'war', 'werden',
+  'weiter', 'geht', 'gehen'
 ]);
 
 function clean(input) {
@@ -133,6 +153,19 @@ function stripStationTerms(input, stationName, stationId) {
   return out;
 }
 
+function looksLikeEditorialOrBulletin(text) {
+  const raw = String(text ?? '').toLowerCase();
+  const words = raw
+    .replace(/[^\p{L}\p{N}\s/:-]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length < 8) return false;
+  const stopwordHits = words.reduce((acc, w) => acc + (GERMAN_STOPWORDS.has(w) ? 1 : 0), 0);
+  const hasClauseSeparators = /[-:/*]{1,3}/.test(raw);
+  const hasMusicJoiners = /\b(feat\.?|ft\.?|featuring| x | vs\.?|&)\b/i.test(raw);
+  return !hasMusicJoiners && hasClauseSeparators && stopwordHits >= 3;
+}
+
 export function isLikelyNoiseTrack(artistRaw, titleRaw, { stationName = '', stationId = '' } = {}) {
   const artist = String(artistRaw ?? '');
   const title = String(titleRaw ?? '');
@@ -142,6 +175,14 @@ export function isLikelyNoiseTrack(artistRaw, titleRaw, { stationName = '', stat
   if (UNKNOWN_TRACK_PATTERN.test(artist.trim()) || UNKNOWN_TRACK_PATTERN.test(title.trim())) return true;
   if (combined.length > 240) return true;
   if (NOISE_PATTERN.test(combined)) return true;
+  if (SERVICE_ANNOUNCEMENT_PATTERN.test(combined)) return true;
+  if (PHONE_NUMBER_PATTERN.test(combined) && SERVICE_ANNOUNCEMENT_PATTERN.test(combined)) return true;
+  if (NON_MUSIC_CONTEXT_PATTERN.test(combined)) return true;
+  if (STATION_SLOGAN_PATTERN.test(combined)) return true;
+  if (BROADCAST_BULLETIN_PATTERN.test(combined)) return true;
+  if (AD_BRAND_PATTERN.test(combined)) return true;
+  if (AD_DURATION_PATTERN.test(combined) && AD_BRAND_PATTERN.test(combined)) return true;
+  if (looksLikeEditorialOrBulletin(combined)) return true;
   const stationArtist = containsAnyStationTerm(artist, stationName, stationId);
   const stationTitle = containsAnyStationTerm(title, stationName, stationId);
   if ((stationArtist || stationTitle) && STATION_PROMO_PATTERN.test(combined)) return true;
