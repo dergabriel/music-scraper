@@ -227,6 +227,53 @@ function artistOverlapRatio(a, b) {
   return common / Math.max(1, Math.min(aa.size, bb.size));
 }
 
+function artistTokensLooseMatch(a, b) {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+function artistOverlapRatioLoose(a, b) {
+  const aa = Array.from(artistTokenSet(a));
+  const bb = Array.from(artistTokenSet(b));
+  if (!aa.length || !bb.length) return 0;
+
+  const used = new Set();
+  let common = 0;
+  for (const tokenA of aa) {
+    let matchedIndex = -1;
+    for (let i = 0; i < bb.length; i += 1) {
+      if (used.has(i)) continue;
+      if (artistTokensLooseMatch(tokenA, bb[i])) {
+        matchedIndex = i;
+        break;
+      }
+    }
+    if (matchedIndex >= 0) {
+      used.add(matchedIndex);
+      common += 1;
+    }
+  }
+  return common / Math.max(1, Math.min(aa.length, bb.length));
+}
+
+function isProperTokenSubset(subset, superset) {
+  if (!subset.size || !superset.size) return false;
+  if (subset.size >= superset.size) return false;
+  for (const token of subset) {
+    if (!superset.has(token)) return false;
+  }
+  return true;
+}
+
+function trackStableIdentity(metaRow) {
+  const isrc = String(metaRow?.isrc ?? '').trim().toLowerCase();
+  if (isrc) return { kind: 'isrc', key: `isrc:${isrc}` };
+  const external = String(metaRow?.external_track_id ?? '').trim().toLowerCase();
+  if (external) return { kind: 'external', key: `external:${external}` };
+  return { kind: 'none', key: null };
+}
+
 export function runTrackOrientationMaintenance({
   dbPath,
   dryRun = false,
@@ -442,6 +489,11 @@ export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
       or ${combinedExpr} like '%mehr musik%'
       or ${combinedExpr} like '%mehr abwechslung%'
       or ${combinedExpr} like '%niedersachs%'
+      or ${combinedExpr} like '%bigfm%'
+      or ${combinedExpr} like '%deutschlands biggste%'
+      or ${combinedExpr} like '%baden württemberg%'
+      or ${combinedExpr} like '%baden-württemberg%'
+      or ${combinedExpr} like '%berlin%'
       or ${combinedExpr} glob '*[0-9]*'
   `).all();
 
@@ -558,6 +610,270 @@ export function runNoisePlayCleanup({ dbPath, dryRun = false, logger }) {
     dryRun
   };
   logger?.info(result, 'noise play cleanup completed');
+  return result;
+}
+
+export function runTitleVariantMergeMaintenance({
+  dbPath,
+  dryRun = false,
+  maxPairs = 5000,
+  minOverlap = 0.6,
+  logger
+}) {
+  const db = openDb(dbPath);
+  const trackRows = db.prepare(`
+    select
+      track_key,
+      min(artist) as artist,
+      min(title) as title,
+      count(*) as plays
+    from plays
+    group by track_key
+  `).all();
+  const metadataRows = db.prepare('select * from track_metadata').all();
+  const metadataByTrackKey = new Map(metadataRows.map((row) => [row.track_key, row]));
+
+  const groupedByTitle = new Map();
+  for (const row of trackRows) {
+    const normalized = normalizeArtistTitle(row.artist, row.title);
+    if (!normalized.artist || !normalized.title) continue;
+    const enriched = {
+      ...row,
+      plays: Number(row.plays || 0),
+      normalized,
+      stable: trackStableIdentity(metadataByTrackKey.get(row.track_key) ?? null)
+    };
+    if (!groupedByTitle.has(normalized.title)) groupedByTitle.set(normalized.title, []);
+    groupedByTitle.get(normalized.title).push(enriched);
+  }
+
+  const candidates = [];
+  let titleGroups = 0;
+  let subgroups = 0;
+
+  for (const rows of groupedByTitle.values()) {
+    if (rows.length < 2) continue;
+    titleGroups += 1;
+
+    const stableGroups = new Map();
+    const nullRows = [];
+    for (const row of rows) {
+      if (!row.stable.key) {
+        nullRows.push(row);
+        continue;
+      }
+      if (!stableGroups.has(row.stable.key)) stableGroups.set(row.stable.key, []);
+      stableGroups.get(row.stable.key).push(row);
+    }
+
+    let remainingNull = [...nullRows];
+    const isrcGroupKeys = Array.from(stableGroups.keys()).filter((key) => key.startsWith('isrc:'));
+    if (isrcGroupKeys.length === 1 && remainingNull.length) {
+      const targetGroup = stableGroups.get(isrcGroupKeys[0]) ?? [];
+      const stillNull = [];
+      for (const nullRow of remainingNull) {
+        const plausible = targetGroup.some((seed) => {
+          const overlap = artistOverlapRatioLoose(nullRow.artist, seed.artist);
+          const aTokens = artistTokenSet(nullRow.artist);
+          const bTokens = artistTokenSet(seed.artist);
+          return overlap >= minOverlap || isProperTokenSubset(aTokens, bTokens) || isProperTokenSubset(bTokens, aTokens);
+        });
+        if (plausible) targetGroup.push(nullRow);
+        else stillNull.push(nullRow);
+      }
+      stableGroups.set(isrcGroupKeys[0], targetGroup);
+      remainingNull = stillNull;
+    }
+
+    const localGroups = Array.from(stableGroups.values());
+    if (remainingNull.length) localGroups.push(remainingNull);
+
+    for (const group of localGroups) {
+      if (group.length < 2) continue;
+      subgroups += 1;
+
+      const winner = [...group].sort((a, b) => {
+        const aMeta = metadataByTrackKey.get(a.track_key) ?? null;
+        const bMeta = metadataByTrackKey.get(b.track_key) ?? null;
+        const aStable = trackStableIdentity(aMeta).kind !== 'none' ? 1 : 0;
+        const bStable = trackStableIdentity(bMeta).kind !== 'none' ? 1 : 0;
+        if (aStable !== bStable) return bStable - aStable;
+
+        const aConfidence = Number(aMeta?.verification_confidence);
+        const bConfidence = Number(bMeta?.verification_confidence);
+        const aConf = Number.isFinite(aConfidence) ? aConfidence : -1;
+        const bConf = Number.isFinite(bConfidence) ? bConfidence : -1;
+        if (aConf !== bConf) return bConf - aConf;
+
+        if (a.plays !== b.plays) return b.plays - a.plays;
+        const aLength = String(a.artist ?? '').length;
+        const bLength = String(b.artist ?? '').length;
+        if (aLength !== bLength) return bLength - aLength;
+        return String(a.track_key).localeCompare(String(b.track_key));
+      })[0];
+      if (!winner) continue;
+
+      const winnerMeta = metadataByTrackKey.get(winner.track_key) ?? null;
+      const metaArtist = String(winnerMeta?.artist ?? '').trim();
+      const metaTitle = String(winnerMeta?.title ?? '').trim();
+      const normalizedMeta = metaArtist && metaTitle ? normalizeArtistTitle(metaArtist, metaTitle) : null;
+      const useMeta = normalizedMeta && normalizedMeta.title === winner.normalized.title;
+      const winnerCanonical = useMeta
+        ? normalizedMeta
+        : normalizeArtistTitle(winner.artist, winner.title);
+      if (!winnerCanonical.artist || !winnerCanonical.title) continue;
+
+      if (winner.track_key !== winnerCanonical.trackKey) {
+        candidates.push({
+          oldKey: winner.track_key,
+          newKey: winnerCanonical.trackKey,
+          artist: winnerCanonical.artist,
+          title: winnerCanonical.title,
+          plays: winner.plays,
+          score: 10
+        });
+      }
+
+      const winnerStable = trackStableIdentity(winnerMeta);
+      for (const loser of group) {
+        if (loser.track_key === winner.track_key) continue;
+        if (loser.track_key === winnerCanonical.trackKey) continue;
+
+        const loserMeta = metadataByTrackKey.get(loser.track_key) ?? null;
+        const loserStable = trackStableIdentity(loserMeta);
+        const sameStable =
+          winnerStable.key &&
+          loserStable.key &&
+          winnerStable.key === loserStable.key;
+
+        const overlap = artistOverlapRatioLoose(loser.artist, winner.artist);
+        const loserTokens = artistTokenSet(loser.artist);
+        const winnerTokens = artistTokenSet(winner.artist);
+        const subsetMatch =
+          loser.normalized.title === winner.normalized.title &&
+          isProperTokenSubset(loserTokens, winnerTokens);
+
+        if (!sameStable && overlap < minOverlap && !subsetMatch) continue;
+
+        candidates.push({
+          oldKey: loser.track_key,
+          newKey: winnerCanonical.trackKey,
+          artist: winnerCanonical.artist,
+          title: winnerCanonical.title,
+          plays: loser.plays,
+          score: sameStable ? 3 : (subsetMatch ? 2 : 1)
+        });
+      }
+    }
+  }
+
+  const bestByOldKey = new Map();
+  for (const row of candidates) {
+    if (!row.oldKey || !row.newKey) continue;
+    if (row.oldKey === row.newKey) continue;
+    const current = bestByOldKey.get(row.oldKey);
+    if (!current || row.score > current.score || (row.score === current.score && row.plays > current.plays)) {
+      bestByOldKey.set(row.oldKey, row);
+    }
+  }
+
+  const mappings = Array.from(bestByOldKey.values())
+    .sort((a, b) => b.plays - a.plays)
+    .slice(0, Math.max(1, Number(maxPairs) || 5000));
+
+  let merged = 0;
+  let playsUpdated = 0;
+  let metadataUpdated = 0;
+  let dailyRowsRebuilt = 0;
+
+  if (!dryRun && mappings.length > 0) {
+    const tx = db.transaction(() => {
+      for (const map of mappings) {
+        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
+        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
+
+        const changes = db.prepare(`
+          update plays
+          set track_key = ?, artist = ?, title = ?
+          where track_key = ?
+        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
+        playsUpdated += changes;
+
+        const dailyByStation = db.prepare(`
+          select date_berlin, station_id, sum(plays) as plays
+          from daily_track_stats
+          where track_key in (?, ?)
+          group by date_berlin, station_id
+        `).all(map.newKey, map.oldKey);
+        if (dailyByStation.length) {
+          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertDaily = db.prepare(`
+            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyByStation) {
+            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
+            dailyRowsRebuilt += 1;
+          }
+        }
+
+        const dailyOverall = db.prepare(`
+          select date_berlin, sum(plays) as plays
+          from daily_overall_track_stats
+          where track_key in (?, ?)
+          group by date_berlin
+        `).all(map.newKey, map.oldKey);
+        if (dailyOverall.length) {
+          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
+          const insertOverall = db.prepare(`
+            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+            values (?, ?, ?, ?, ?)
+          `);
+          for (const row of dailyOverall) {
+            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
+          }
+        }
+
+        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
+
+        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+        if (chosenMeta) {
+          const mergedMeta = {
+            ...chosenMeta,
+            track_key: map.newKey,
+            artist: map.artist,
+            title: map.title
+          };
+          upsertTrackMetadata(db, mergedMeta);
+          metadataByTrackKey.set(map.newKey, mergedMeta);
+          metadataUpdated += 1;
+        }
+        if (loserMeta) {
+          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
+          metadataByTrackKey.delete(map.oldKey);
+        }
+
+        merged += 1;
+      }
+    });
+    tx();
+  }
+
+  db.close();
+  const result = {
+    scannedTracks: trackRows.length,
+    titleGroups,
+    subgroups,
+    candidates: candidates.length,
+    selectedPairs: mappings.length,
+    merged,
+    playsUpdated,
+    metadataUpdated,
+    dailyRowsRebuilt,
+    dryRun,
+    minOverlap
+  };
+  logger?.info(result, 'title variant merge maintenance completed');
   return result;
 }
 

@@ -44,6 +44,8 @@ const GERMAN_STOPWORDS = new Set([
   'für', 'fuer', 'bei', 'nach', 'vor', 'als', 'ist', 'sind', 'war', 'werden',
   'weiter', 'geht', 'gehen'
 ]);
+const SHORT_SUBTITLE_BLOCK_PATTERN = /\s*[\[(]\s*([^\]\)]{1,64})\s*[\])]\s*$/u;
+const SHORT_SUBTITLE_DISALLOWED_PATTERN = /\b(radio|edit|remix|mix|version|remaster(?:ed)?|extended|live|acoustic)\b/i;
 
 function clean(input) {
   return (input ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -87,6 +89,30 @@ function stripTracklistPrefix(input) {
   return String(input ?? '')
     .replace(/^\s*(?:#\s*)?\d{1,3}\s*[\.\)\-:]\s*/i, '')
     .replace(/^\s*track\s*\d{1,3}\s*[\.\)\-:]\s*/i, '');
+}
+
+function stripShortParentheticalSubtitle(input) {
+  const source = String(input ?? '');
+  const match = source.match(SHORT_SUBTITLE_BLOCK_PATTERN);
+  if (!match) return source;
+
+  const content = normalizeUnicode(match[1])
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!content) return source;
+  if (content.length < 1 || content.length > 16) return source;
+  if (!/^[\p{L}\s]+$/u.test(content)) return source;
+  if (SHORT_SUBTITLE_DISALLOWED_PATTERN.test(content)) return source;
+
+  const words = content.split(' ').filter(Boolean);
+  if (!words.some((word) => word.length >= 4)) return source;
+
+  return source.replace(SHORT_SUBTITLE_BLOCK_PATTERN, '').trim();
+}
+
+function stripTrailingYearEditionTag(input) {
+  return String(input ?? '').replace(/\s'2[0-9]\s*$/u, '').trim();
 }
 
 function canonicalizeArtistPart(input) {
@@ -255,7 +281,16 @@ export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', st
   const titleWithoutDuplicateArtist = stripDuplicatedArtistPrefix(titleSanitized, artistSanitized);
 
   const artistBase = stripStationTerms(stripPromoMarkers(stripBracketSuffix(stripFeat(artistSanitized))), stationName, stationId);
-  const titleBase = clean(stripStationTerms(stripPromoMarkers(stripBracketSuffix(stripFeat(titleWithoutDuplicateArtist))), stationName, stationId));
+  const titlePrepared = stripStationTerms(
+    stripPromoMarkers(
+      stripBracketSuffix(
+        stripFeat(titleWithoutDuplicateArtist)
+      )
+    ),
+    stationName,
+    stationId
+  );
+  const titleBase = clean(stripTrailingYearEditionTag(stripShortParentheticalSubtitle(titlePrepared)));
 
   const artist = canonicalizeArtist(artistBase);
   const title = titleBase.replace(/\s+/g, ' ').trim();

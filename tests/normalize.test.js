@@ -42,6 +42,32 @@ describe('normalizeArtistTitle', () => {
     expect(a.trackKey).toBe(b.trackKey);
   });
 
+  it('strips short trailing subtitle brackets for canonical title variants', () => {
+    const a = normalizeArtistTitle('a7s & topic', 'kernkraft 400 (a better day)');
+    const b = normalizeArtistTitle('a7s & topic', 'kernkraft 400');
+    expect(a.title).toBe('kernkraft 400');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
+  it('strips short color subtitle at end without breaking canonical title', () => {
+    const a = normalizeArtistTitle('bebe rexha & david guetta', "i'm good (blue)");
+    const b = normalizeArtistTitle('bebe rexha & david guetta', "i'm good");
+    expect(a.title).toBe("i'm good");
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
+  it('strips trailing apostrophe year editions in 20-29 range only', () => {
+    const a = normalizeArtistTitle('hurts & purple disco machine', "wonderful life '25");
+    const b = normalizeArtistTitle('hurts & purple disco machine', 'wonderful life');
+    expect(a.title).toBe('wonderful life');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
+  it("keeps classic year markers like summer '69 untouched", () => {
+    const out = normalizeArtistTitle('bryan adams', "summer '69");
+    expect(out.title).toBe("summer '69");
+  });
+
   it('builds stable hash for equal canonical forms', () => {
     const a = normalizeArtistTitle('A FEAT. B', 'C (remix)');
     const b = normalizeArtistTitle('a', 'c');

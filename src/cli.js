@@ -12,6 +12,7 @@ import {
   runBackpoolAnalysis,
   runCanonicalArtistMaintenance,
   runItunesCanonicalMaintenance,
+  runTitleVariantMergeMaintenance,
   runTrackOrientationMaintenance,
   runNoisePlayCleanup,
   runPromoMarkerMaintenance
@@ -191,6 +192,12 @@ program
         maxPairs: Number(opts.maxPairs),
         logger
       });
+      runTitleVariantMergeMaintenance({
+        dbPath: opts.db,
+        dryRun: Boolean(opts.dryRun),
+        maxPairs: Number(opts.maxPairs),
+        logger
+      });
       const result = runTrackOrientationMaintenance({
         dbPath: opts.db,
         dryRun: Boolean(opts.dryRun),
@@ -219,6 +226,7 @@ program
         runPromoMarkerMaintenance({ dbPath: opts.db, logger });
         runItunesCanonicalMaintenance({ dbPath: opts.db, logger });
         runCanonicalArtistMaintenance({ dbPath: opts.db, logger });
+        runTitleVariantMergeMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
@@ -288,6 +296,7 @@ program
         runPromoMarkerMaintenance({ dbPath: opts.db, logger });
         runItunesCanonicalMaintenance({ dbPath: opts.db, logger });
         runCanonicalArtistMaintenance({ dbPath: opts.db, logger });
+        runTitleVariantMergeMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({

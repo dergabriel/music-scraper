@@ -9,7 +9,8 @@ import {
   runTrackOrientationMaintenance,
   runNoisePlayCleanup,
   runPromoMarkerMaintenance,
-  runCanonicalArtistMaintenance
+  runCanonicalArtistMaintenance,
+  runTitleVariantMergeMaintenance
 } from '../src/services.js';
 
 function addPlay(db, { stationId, playedAtUtcIso, artistRaw, titleRaw }) {
@@ -467,6 +468,185 @@ describe('database maintenance', () => {
     const loserBackpool = check.prepare('select track_key from backpool_track_catalog where track_key = ?').get(legacyKey);
     expect(loserBackpool).toBeUndefined();
     check.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merges title variants with subset artist lists for no broke boys', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-title-variant-subset-'));
+    const dbPath = path.join(tmp, 'subset.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'planet_radio',
+      name: 'Planet Radio',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('disco lines & tinashe', 'no broke boys');
+    const legacyKey = crypto
+      .createHash('sha1')
+      .update('disco lines||no broke boys', 'utf8')
+      .digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'planet_radio',
+      '2026-03-01T08:00:00.000Z',
+      'Disco Lines & Tinashe',
+      'No Broke Boys',
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-01T09:00:00.000Z',
+      'planet_radio',
+      '2026-03-01T10:00:00.000Z',
+      'Disco Lines',
+      'No Broke Boys',
+      'disco lines',
+      'no broke boys',
+      legacyKey,
+      'https://example.test',
+      '2026-03-01T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runTitleVariantMergeMaintenance({ dbPath, dryRun: false, minOverlap: 0.6 });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+      from plays
+      where title = 'no broke boys'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonical.trackKey);
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("merges i'm good and i'm good (blue) into one track key", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-title-variant-blue-'));
+    const dbPath = path.join(tmp, 'blue.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'energy_berlin',
+      name: 'Energy Berlin',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('bebe rexha & david guetta', "i'm good");
+    const legacyKey = crypto
+      .createHash('sha1')
+      .update("bebe rexha & david guetta||i'm good (blue)", 'utf8')
+      .digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'energy_berlin',
+      '2026-03-01T08:00:00.000Z',
+      'Bebe Rexha & David Guetta',
+      "I'm Good",
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-01T09:00:00.000Z',
+      'energy_berlin',
+      '2026-03-01T10:00:00.000Z',
+      'Bebe Rexha & David Guetta',
+      "I'm Good (Blue)",
+      'bebe rexha & david guetta',
+      "i'm good (blue)",
+      legacyKey,
+      'https://example.test',
+      '2026-03-01T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runTitleVariantMergeMaintenance({ dbPath, dryRun: false, minOverlap: 0.6 });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(title) as title, count(*) as plays
+      from plays
+      where artist like 'bebe rexha%'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonical.trackKey);
+    expect(rows[0].title).toBe("i'm good");
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merges kernkraft 400 with a better day suffix into one track key', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-title-variant-kernkraft-'));
+    const dbPath = path.join(tmp, 'kernkraft.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'rtl_89_0',
+      name: '89.0 RTL',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('a7s & topic', 'kernkraft 400');
+    const legacyKey = crypto
+      .createHash('sha1')
+      .update('a7s & topic||kernkraft 400 (a better day)', 'utf8')
+      .digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'rtl_89_0',
+      '2026-03-01T08:00:00.000Z',
+      'A7S & Topic',
+      'Kernkraft 400',
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-01T09:00:00.000Z',
+      'rtl_89_0',
+      '2026-03-01T10:00:00.000Z',
+      'A7S & Topic',
+      'Kernkraft 400 (A Better Day)',
+      'a7s & topic',
+      'kernkraft 400 (a better day)',
+      legacyKey,
+      'https://example.test',
+      '2026-03-01T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runTitleVariantMergeMaintenance({ dbPath, dryRun: false, minOverlap: 0.6 });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(title) as title, count(*) as plays
+      from plays
+      where artist = 'a7s & topic'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonical.trackKey);
+    expect(rows[0].title).toBe('kernkraft 400');
+    expect(rows[0].plays).toBe(2);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
