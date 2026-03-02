@@ -7,7 +7,7 @@
     "music-scraper": "./src/cli.js"
   },
   "scripts": {
-    "api": "node src/cli.js api --config config.yaml --port 8787 --schedule-daily --daily-hour 23",
+    "api": "node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787",
     "daily": "node src/cli.js daily-job --config config.yaml --make-report",
     "evaluate:today": "node src/cli.js evaluate-daily --config config.yaml",
     "test": "vitest run",
@@ -23,6 +23,7 @@
     "express": "^4.21.2",
     "js-yaml": "^4.1.0",
     "luxon": "^3.6.1",
+    "node-cron": "^4.2.1",
     "pino": "^9.6.0",
     "undici": "^7.4.0",
     "zod": "^3.24.1"

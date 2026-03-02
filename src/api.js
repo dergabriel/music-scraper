@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import pino from 'pino';
 import { createRequire } from 'node:module';
@@ -18,7 +19,7 @@ import {
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackSeriesByStation, buildTrackTotals } from './trends.js';
-import { runDailyEvaluation, runIngest, nextBerlinTime, runBackpoolAnalysis, runTrackOrientationMaintenance, runNoisePlayCleanup, runPromoMarkerMaintenance } from './services.js';
+import { runDailyEvaluation, runBackpoolAnalysis } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
 import { TrackVerifier } from './trackVerifier.js';
@@ -641,7 +642,66 @@ function listenOnPort(app, port, logger) {
   });
 }
 
-export async function startApiServer({ configPath, dbPath, port = 8787, scheduleDaily = false, dailyHour = 23 }) {
+function quoteShellArg(value) {
+  return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function runCliCommand(commandName, args) {
+  const cliPath = path.resolve(__dirname, 'cli.js');
+  const command = [quoteShellArg(process.execPath), quoteShellArg(cliPath), quoteShellArg(commandName), ...args.map(quoteShellArg)].join(' ');
+  return new Promise((resolve, reject) => {
+    exec(command, { cwd: path.resolve(__dirname, '..'), maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (stdout?.trim()) console.log(`[cron] ${commandName} stdout\n${stdout.trim()}`);
+      if (stderr?.trim()) console.error(`[cron] ${commandName} stderr\n${stderr.trim()}`);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function initHourlyCron({ configPath, dbPath }) {
+  let cron;
+  try {
+    cron = require('node-cron');
+  } catch (error) {
+    console.error('[cron] node-cron nicht installiert. Bitte `npm install node-cron` ausführen.', error);
+    return;
+  }
+
+  let isRunning = false;
+  const runHourlyJobs = async () => {
+    if (isRunning) {
+      console.log('[cron] Lauf uebersprungen: vorheriger Job laeuft noch.');
+      return;
+    }
+
+    isRunning = true;
+    const startedAt = new Date().toISOString();
+    console.log(`[cron] Start: ${startedAt}`);
+
+    try {
+      await runCliCommand('ingest', ['--config', configPath, '--db', dbPath]);
+      await runCliCommand('maintain-db', ['--db', dbPath]);
+      console.log(`[cron] Erfolg: ingest + maintain-db abgeschlossen (${new Date().toISOString()})`);
+    } catch (error) {
+      console.error(`[cron] Fehler: ${(error && error.message) || String(error)}`);
+    } finally {
+      isRunning = false;
+      console.log(`[cron] Ende: ${new Date().toISOString()}`);
+    }
+  };
+
+  cron.schedule('0 * * * *', () => {
+    void runHourlyJobs();
+  });
+
+  console.log(`[cron] Initialisiert: 0 * * * * (db=${dbPath})`);
+}
+
+export async function startApiServer({ configPath, dbPath, port = 8787 }) {
   const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
   const app = createApiApp({ configPath, dbPath, logger });
 
@@ -664,36 +724,7 @@ export async function startApiServer({ configPath, dbPath, port = 8787, schedule
     throw new Error(`Could not start API server: no free port found from ${port} to ${selectedPort}`);
   }
 
-  if (scheduleDaily) {
-    const scheduleNext = () => {
-      const next = nextBerlinTime(dailyHour, 0);
-      const waitMs = Math.max(1000, next.toMillis() - Date.now());
-      logger.info({ runAtBerlin: next.toISO() }, 'scheduled next daily ingest/evaluation');
-      setTimeout(async () => {
-        try {
-          await runIngest({ configPath, dbPath, logger });
-          runNoisePlayCleanup({ dbPath, logger });
-          runPromoMarkerMaintenance({ dbPath, logger });
-          runTrackOrientationMaintenance({ dbPath, logger });
-          const date = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
-          runDailyEvaluation({ configPath, dbPath, date, logger });
-          await runBackpoolAnalysis({
-            configPath,
-            dbPath,
-            writeReport: false,
-            autoEnrichMissingRelease: false,
-            persistToDb: true,
-            logger
-          });
-        } catch (err) {
-          logger.error({ err: err instanceof Error ? err.message : String(err) }, 'daily scheduled job failed');
-        } finally {
-          scheduleNext();
-        }
-      }, waitMs);
-    };
-    scheduleNext();
-  }
+  initHourlyCron({ configPath, dbPath });
 
   return server;
 }

@@ -260,11 +260,9 @@ program
 program
   .command('api')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
   .option('--port <number>', 'API port', '8787')
   .option('--no-startup-report', 'Skip automatic ingest + evaluation + weekly report at API startup')
-  .option('--schedule-daily', 'Run ingest + daily evaluation automatically at 23:00 Europe/Berlin')
-  .option('--daily-hour <number>', 'Berlin hour for scheduled daily run', '23')
   .action(async (opts) => {
     try {
       if (opts.startupReport) {
@@ -302,9 +300,7 @@ program
       await startApiServer({
         configPath: opts.config,
         dbPath: opts.db,
-        port: Number(opts.port),
-        scheduleDaily: Boolean(opts.scheduleDaily),
-        dailyHour: Number(opts.dailyHour)
+        port: Number(opts.port)
       });
     } catch (err) {
       logger.error({ err: err.message }, 'api failed');
