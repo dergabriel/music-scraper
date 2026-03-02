@@ -110,6 +110,24 @@ function formatSeriesPeriod(period, bucket) {
   return period;
 }
 
+function toCumulativeSeries(series) {
+  let total = 0;
+  return (Array.isArray(series) ? series : []).map((row) => {
+    total += Number(row.plays || 0);
+    return {
+      period: row.period,
+      plays: total
+    };
+  });
+}
+
+function shiftIsoDate(isoDate, days) {
+  const base = new Date(`${isoDate}T12:00:00.000Z`);
+  if (Number.isNaN(base.getTime())) return isoDate;
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
 function renderTrackMetadata(metadata) {
   const state = qs('trackMetaState');
   const list = qs('trackMetaList');
@@ -287,6 +305,16 @@ function renderSeriesByStationChart(container, rows, bucket = 'day') {
     return;
   }
 
+  if (periods.length === 1) {
+    const hint = document.createElement('p');
+    hint.className = 'text-secondary mb-0';
+    hint.textContent =
+      `Nur ein Zeitraum vorhanden (${formatSeriesPeriod(periods[0], bucket)}). ` +
+      `Für einen echten Verlauf bitte einen größeren Datumsbereich wählen.`;
+    container.appendChild(hint);
+    return;
+  }
+
   const width = 940;
   const height = 300;
   const pad = { t: 16, r: 16, b: 56, l: 54 };
@@ -369,13 +397,142 @@ function renderSeriesByStationChart(container, rows, bucket = 'day') {
 
   const legend = document.createElement('div');
   legend.className = 'mt-2 d-flex flex-wrap gap-2';
-  prepared.forEach((row) => {
+  const visibleLegend = prepared.slice(0, 6);
+  const hiddenCount = Math.max(0, prepared.length - visibleLegend.length);
+  visibleLegend.forEach((row) => {
     const item = document.createElement('span');
     item.className = 'badge text-bg-light';
     const color = colorByStation.get(row.stationId) || '#0ea5a4';
     item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;"></span>${row.stationName} (${Number(row.totalPlays || 0).toLocaleString('de-DE')})`;
     legend.appendChild(item);
   });
+  if (hiddenCount > 0) {
+    const more = document.createElement('span');
+    more.className = 'badge text-bg-secondary';
+    more.textContent = `+${hiddenCount} weitere Sender`;
+    legend.appendChild(more);
+  }
+  container.appendChild(legend);
+}
+
+function berlinYesterdayIso() {
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  return yesterday.toISOString().slice(0, 10);
+}
+
+function renderStationCompareChart(container, totalRows, yesterdayRows) {
+  container.innerHTML = '';
+  const totals = Array.isArray(totalRows) ? totalRows : [];
+  const yRows = Array.isArray(yesterdayRows) ? yesterdayRows : [];
+  if (!totals.length && !yRows.length) {
+    container.textContent = 'Keine Senderdaten im Zeitraum.';
+    return;
+  }
+
+  const totalMap = new Map(totals.map((row) => [
+    row.station_id,
+    {
+      stationId: row.station_id,
+      stationName: row.station_name || row.station_id,
+      totalPlays: Number(row.plays || 0)
+    }
+  ]));
+  const yMap = new Map(yRows.map((row) => [row.station_id, Number(row.plays || 0)]));
+  const ids = new Set([...totalMap.keys(), ...yMap.keys()]);
+  const rows = Array.from(ids).map((stationId) => ({
+    stationId,
+    stationName: totalMap.get(stationId)?.stationName || stationId,
+    totalPlays: Number(totalMap.get(stationId)?.totalPlays || 0),
+    yesterdayPlays: Number(yMap.get(stationId) || 0)
+  }))
+    .sort((a, b) => b.totalPlays - a.totalPlays || b.yesterdayPlays - a.yesterdayPlays)
+    .slice(0, 12);
+
+  if (!rows.length) {
+    container.textContent = 'Keine Senderdaten im Zeitraum.';
+    return;
+  }
+
+  const width = 980;
+  const height = Math.max(320, rows.length * 32 + 72);
+  const pad = { t: 18, r: 120, b: 30, l: 200 };
+  const w = width - pad.l - pad.r;
+  const h = height - pad.t - pad.b;
+  const max = Math.max(1, ...rows.map((row) => Math.max(row.totalPlays, row.yesterdayPlays)));
+  const bar = h / rows.length;
+  const svg = makeSvg(width, height);
+
+  svg.appendChild(makeSvgEl('line', { x1: pad.l, x2: pad.l, y1: pad.t, y2: pad.t + h, stroke: '#7f95aa', 'stroke-width': 1 }));
+  svg.appendChild(makeSvgEl('line', { x1: pad.l, x2: pad.l + w, y1: pad.t + h, y2: pad.t + h, stroke: '#7f95aa', 'stroke-width': 1 }));
+
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i += 1) {
+    const val = Math.round((max * i) / ticks);
+    const x = pad.l + (w * i) / ticks;
+    svg.appendChild(makeSvgEl('line', { x1: x, x2: x, y1: pad.t + h, y2: pad.t + h + 4, stroke: '#7f95aa' }));
+    const label = makeSvgEl('text', { x, y: pad.t + h + 16, 'font-size': 11, 'text-anchor': 'middle' });
+    label.textContent = val.toLocaleString('de-DE');
+    svg.appendChild(label);
+  }
+
+  rows.forEach((row, index) => {
+    const y = pad.t + index * bar + 5;
+    const totalW = (row.totalPlays / max) * (w - 8);
+    const yW = (row.yesterdayPlays / max) * (w - 8);
+    const barH = Math.max(14, bar - 10);
+
+    const label = makeSvgEl('text', { x: 8, y: y + barH / 2 + 4, 'font-size': 12 });
+    label.textContent = row.stationName;
+    svg.appendChild(label);
+
+    const totalRect = makeSvgEl('rect', {
+      x: pad.l,
+      y,
+      width: Math.max(1, totalW),
+      height: barH,
+      rx: 4,
+      fill: '#f59e0b'
+    });
+    svg.appendChild(totalRect);
+    bindChartTooltip(container, totalRect, () => `${row.stationName}: Gesamt ${row.totalPlays.toLocaleString('de-DE')} Plays`);
+
+    if (row.yesterdayPlays > 0) {
+      const yRect = makeSvgEl('rect', {
+        x: pad.l,
+        y: y + Math.max(2, Math.floor(barH * 0.35)),
+        width: Math.max(1, yW),
+        height: Math.max(4, Math.floor(barH * 0.35)),
+        rx: 3,
+        fill: '#14b8a6'
+      });
+      svg.appendChild(yRect);
+      bindChartTooltip(container, yRect, () => `${row.stationName}: Gestern ${row.yesterdayPlays.toLocaleString('de-DE')} Plays`);
+    }
+
+    const val = makeSvgEl('text', { x: pad.l + Math.max(2, totalW) + 6, y: y + barH / 2 + 4, 'font-size': 11 });
+    val.textContent = `${row.totalPlays.toLocaleString('de-DE')} | G ${row.yesterdayPlays.toLocaleString('de-DE')}`;
+    svg.appendChild(val);
+  });
+
+  const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 6, 'font-size': 12, 'text-anchor': 'middle' });
+  xLabel.textContent = 'Anzahl Plays';
+  svg.appendChild(xLabel);
+
+  const yLabel = makeSvgEl('text', {
+    x: 16,
+    y: pad.t + h / 2,
+    'font-size': 12,
+    'text-anchor': 'middle',
+    transform: `rotate(-90 16 ${pad.t + h / 2})`
+  });
+  yLabel.textContent = 'Sender';
+  svg.appendChild(yLabel);
+
+  container.appendChild(svg);
+  const legend = document.createElement('div');
+  legend.className = 'text-secondary mt-2';
+  legend.textContent = 'Orange = Gesamt im gewählten Zeitraum, Türkis = gestriger Tag';
   container.appendChild(legend);
 }
 
@@ -569,7 +726,7 @@ async function loadTracks() {
     qs('selectedMeta').textContent = 'Kein passender Song im aktuellen Filter gefunden.';
     renderTrackMetadata(null);
     renderLineChart(qs('seriesChart'), [], qs('bucketSelect')?.value || 'day');
-    renderSeriesByStationChart(qs('seriesByStationChart'), [], qs('bucketSelect')?.value || 'day');
+    renderLineChart(qs('seriesByStationChart'), [], 'day');
     renderBarChart(qs('stationsChart'), []);
   }
 }
@@ -580,7 +737,7 @@ async function loadNewThisWeek() {
   if (stationId) params.set('stationId', stationId);
   params.set('weekStart', weekStartIso());
   params.set('limit', '12');
-  params.set('maxReleaseAgeDays', '730');
+  params.set('releaseYear', String(new Date().getFullYear()));
 
   const data = await apiFetch(`/api/insights/new-this-week?${params.toString()}`);
   newWeekRows = data.rows || [];
@@ -613,22 +770,36 @@ async function loadDetails() {
   const params = new URLSearchParams();
   const stationId = qs('stationSelect').value;
   const bucket = qs('bucketSelect').value;
+  const selectedFrom = qs('fromInput').value || '';
+  const selectedTo = qs('toInput').value || '';
   if (stationId) params.set('stationId', stationId);
   params.set('bucket', bucket);
-  if (qs('fromInput').value) params.set('from', qs('fromInput').value);
-  if (qs('toInput').value) params.set('to', qs('toInput').value);
+  if (selectedFrom) params.set('from', selectedFrom);
+  if (selectedTo) params.set('to', selectedTo);
+
+  const yesterday = berlinYesterdayIso();
+  const cappedTo = selectedTo && selectedTo < yesterday ? selectedTo : yesterday;
+  const dailyFrom = selectedFrom || shiftIsoDate(cappedTo, -90);
+  const dailyParams = new URLSearchParams();
+  dailyParams.set('bucket', 'day');
+  dailyParams.set('from', dailyFrom);
+  dailyParams.set('to', cappedTo);
+  const cumulativeParams = new URLSearchParams();
+  cumulativeParams.set('bucket', 'day');
+  cumulativeParams.set('from', '2000-01-01');
+  cumulativeParams.set('to', cappedTo);
 
   let totals;
-  let series;
-  let seriesByStation;
+  let cumulativeSeries;
+  let dailySeries;
   let stationsData;
   let metadata = null;
   try {
-    [totals, series, seriesByStation, stationsData] = await Promise.all([
+    [totals, cumulativeSeries, dailySeries, stationsData] = await Promise.all([
       apiFetch(`/api/tracks/${trackKey}/totals?${params.toString()}`),
-      apiFetch(`/api/tracks/${trackKey}/series?${params.toString()}`),
-      apiFetch(`/api/tracks/${trackKey}/series-by-station?${params.toString()}&limit=10`),
-      apiFetch(`/api/tracks/${trackKey}/stations?${params.toString()}`)
+      apiFetch(`/api/tracks/${trackKey}/series?${cumulativeParams.toString()}`),
+      apiFetch(`/api/tracks/${trackKey}/series?${dailyParams.toString()}`),
+      apiFetch(`/api/tracks/${trackKey}/stations?${params.toString()}`),
     ]);
   } catch (error) {
     const fallback = tracks[0] || null;
@@ -640,8 +811,8 @@ async function loadDetails() {
       qs('totalYear').textContent = '-';
       qs('totalAll').textContent = '-';
       renderTrackMetadata(null);
-      renderLineChart(qs('seriesChart'), [], bucket);
-      renderSeriesByStationChart(qs('seriesByStationChart'), [], bucket);
+      renderLineChart(qs('seriesChart'), [], 'day');
+      renderLineChart(qs('seriesByStationChart'), [], 'day');
       renderBarChart(qs('stationsChart'), []);
       return;
     }
@@ -657,8 +828,8 @@ async function loadDetails() {
     qs('totalYear').textContent = '-';
     qs('totalAll').textContent = '-';
     renderTrackMetadata(null);
-    renderLineChart(qs('seriesChart'), [], bucket);
-    renderSeriesByStationChart(qs('seriesByStationChart'), [], bucket);
+    renderLineChart(qs('seriesChart'), [], 'day');
+    renderLineChart(qs('seriesByStationChart'), [], 'day');
     renderBarChart(qs('stationsChart'), []);
     return;
   }
@@ -689,8 +860,8 @@ async function loadDetails() {
   qs('totalAll').textContent = Number(totals.totals?.allTime || 0).toLocaleString('de-DE');
   renderTrackMetadata(metadata);
 
-  renderLineChart(qs('seriesChart'), series.series || [], bucket);
-  renderSeriesByStationChart(qs('seriesByStationChart'), seriesByStation.stations || [], bucket);
+  renderLineChart(qs('seriesChart'), toCumulativeSeries(cumulativeSeries.series || []), 'day');
+  renderLineChart(qs('seriesByStationChart'), dailySeries.series || [], 'day');
   renderBarChart(qs('stationsChart'), stationsData.stations || []);
 }
 

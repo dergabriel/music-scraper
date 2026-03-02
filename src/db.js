@@ -361,16 +361,19 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
   if (stationId && query) {
     return db.prepare(`
       select
-        track_key,
-        min(artist) as artist,
-        min(title) as title,
+        p.track_key,
+        min(p.artist) as artist,
+        min(p.title) as title,
         count(*) as total_plays,
-        min(played_at_utc) as first_played_at_utc,
-        max(played_at_utc) as last_played_at_utc
-      from plays
-      where station_id = ?
-        and (artist like ? or title like ?)
-      group by track_key
+        min(p.played_at_utc) as first_played_at_utc,
+        max(p.played_at_utc) as last_played_at_utc,
+        min(m.release_date_utc) as release_date_utc,
+        min(m.verification_confidence) as verification_confidence
+      from plays p
+      left join track_metadata m on m.track_key = p.track_key
+      where p.station_id = ?
+        and (p.artist like ? or p.title like ?)
+      group by p.track_key
       order by total_plays desc, artist asc, title asc
       limit ?
     `).all(stationId, `%${query}%`, `%${query}%`, parsedLimit);
@@ -379,15 +382,18 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
   if (stationId) {
     return db.prepare(`
       select
-        track_key,
-        min(artist) as artist,
-        min(title) as title,
+        p.track_key,
+        min(p.artist) as artist,
+        min(p.title) as title,
         count(*) as total_plays,
-        min(played_at_utc) as first_played_at_utc,
-        max(played_at_utc) as last_played_at_utc
-      from plays
-      where station_id = ?
-      group by track_key
+        min(p.played_at_utc) as first_played_at_utc,
+        max(p.played_at_utc) as last_played_at_utc,
+        min(m.release_date_utc) as release_date_utc,
+        min(m.verification_confidence) as verification_confidence
+      from plays p
+      left join track_metadata m on m.track_key = p.track_key
+      where p.station_id = ?
+      group by p.track_key
       order by total_plays desc, artist asc, title asc
       limit ?
     `).all(stationId, parsedLimit);
@@ -396,15 +402,18 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
   if (query) {
     return db.prepare(`
       select
-        track_key,
-        min(artist) as artist,
-        min(title) as title,
+        p.track_key,
+        min(p.artist) as artist,
+        min(p.title) as title,
         count(*) as total_plays,
-        min(played_at_utc) as first_played_at_utc,
-        max(played_at_utc) as last_played_at_utc
-      from plays
-      where artist like ? or title like ?
-      group by track_key
+        min(p.played_at_utc) as first_played_at_utc,
+        max(p.played_at_utc) as last_played_at_utc,
+        min(m.release_date_utc) as release_date_utc,
+        min(m.verification_confidence) as verification_confidence
+      from plays p
+      left join track_metadata m on m.track_key = p.track_key
+      where p.artist like ? or p.title like ?
+      group by p.track_key
       order by total_plays desc, artist asc, title asc
       limit ?
     `).all(`%${query}%`, `%${query}%`, parsedLimit);
@@ -412,14 +421,17 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
 
   return db.prepare(`
     select
-      track_key,
-      min(artist) as artist,
-      min(title) as title,
+      p.track_key,
+      min(p.artist) as artist,
+      min(p.title) as title,
       count(*) as total_plays,
-      min(played_at_utc) as first_played_at_utc,
-      max(played_at_utc) as last_played_at_utc
-    from plays
-    group by track_key
+      min(p.played_at_utc) as first_played_at_utc,
+      max(p.played_at_utc) as last_played_at_utc,
+      min(m.release_date_utc) as release_date_utc,
+      min(m.verification_confidence) as verification_confidence
+    from plays p
+    left join track_metadata m on m.track_key = p.track_key
+    group by p.track_key
     order by total_plays desc, artist asc, title asc
     limit ?
   `).all(parsedLimit);
@@ -450,11 +462,15 @@ export function getNewTracksInWeek(
     prevEndUtcIso,
     stationId,
     limit = 50,
-    maxReleaseAgeDays = 730
+    maxReleaseAgeDays = 730,
+    releaseYear
   }
 ) {
   const parsedLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
   const parsedMaxReleaseAgeDays = Math.max(1, Math.min(Number(maxReleaseAgeDays) || 730, 3650));
+  const parsedReleaseYear = Number.isFinite(Number(releaseYear))
+    ? String(Math.floor(Number(releaseYear)))
+    : null;
 
   if (stationId) {
     return db.prepare(`
@@ -480,7 +496,11 @@ export function getNewTracksInWeek(
       left join track_metadata m on m.track_key = c.track_key
       where p.track_key is null
         and m.release_date_utc is not null
-        and date(m.release_date_utc) >= date(?, '-' || ? || ' days')
+        and (
+          (? is not null and substr(m.release_date_utc, 1, 4) = ?)
+          or
+          (? is null and date(m.release_date_utc) >= date(?, '-' || ? || ' days'))
+        )
       order by c.plays desc, c.artist asc, c.title asc
       limit ?
     `).all(
@@ -490,6 +510,9 @@ export function getNewTracksInWeek(
       stationId,
       prevStartUtcIso,
       prevEndUtcIso,
+      parsedReleaseYear,
+      parsedReleaseYear,
+      parsedReleaseYear,
       endUtcIso,
       parsedMaxReleaseAgeDays,
       parsedLimit
@@ -517,10 +540,25 @@ export function getNewTracksInWeek(
     left join track_metadata m on m.track_key = c.track_key
     where p.track_key is null
       and m.release_date_utc is not null
-      and date(m.release_date_utc) >= date(?, '-' || ? || ' days')
+      and (
+        (? is not null and substr(m.release_date_utc, 1, 4) = ?)
+        or
+        (? is null and date(m.release_date_utc) >= date(?, '-' || ? || ' days'))
+      )
     order by c.plays desc, c.artist asc, c.title asc
     limit ?
-  `).all(startUtcIso, endUtcIso, prevStartUtcIso, prevEndUtcIso, endUtcIso, parsedMaxReleaseAgeDays, parsedLimit);
+  `).all(
+    startUtcIso,
+    endUtcIso,
+    prevStartUtcIso,
+    prevEndUtcIso,
+    parsedReleaseYear,
+    parsedReleaseYear,
+    parsedReleaseYear,
+    endUtcIso,
+    parsedMaxReleaseAgeDays,
+    parsedLimit
+  );
 }
 
 export function dedupeStationToOnePlayPerMinute(db, stationId) {

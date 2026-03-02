@@ -126,7 +126,7 @@ describe('api handlers', () => {
       external_track_id: null,
       external_url: null,
       artwork_url: null,
-      release_date_utc: '2025-12-01T00:00:00.000Z',
+      release_date_utc: '2026-01-15T00:00:00.000Z',
       genre: 'Pop',
       album: null,
       label: null,
@@ -172,7 +172,7 @@ describe('api handlers', () => {
     expect(stationsRes.body.length).toBe(1);
 
     const newWeekRes = mkRes();
-    h.newThisWeek({ query: { weekStart: '2026-02-23', stationId: 'planet_radio', limit: '20' } }, newWeekRes);
+    h.newThisWeek({ query: { weekStart: '2026-02-23', stationId: 'planet_radio', limit: '20', releaseYear: '2026' } }, newWeekRes);
     expect(newWeekRes.statusCode).toBe(200);
     expect(Array.isArray(newWeekRes.body.rows)).toBe(true);
     expect(newWeekRes.body.rows.some((row) => row.track_key === oldKey)).toBe(false);

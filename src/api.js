@@ -87,7 +87,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/tracks/:trackKey/meta',
           'POST /api/tracks/:trackKey/meta/refresh',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
-          'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&maxReleaseAgeDays=730',
+          'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&releaseYear=YYYY&maxReleaseAgeDays=730',
           'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationMinReleaseAgeDays=1095&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
           'GET /api/insights/backpool/catalog?stationId=ID&classification=rotation_backpool|hot_rotation|sparse_rotation&limit=500',
           'GET /api/insights/backpool/summary?stationId=ID',
@@ -333,6 +333,10 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const maxReleaseAgeDays = Number.isFinite(rawMaxReleaseAgeDays)
           ? Math.max(1, Math.min(rawMaxReleaseAgeDays, 3650))
           : 730;
+        const rawReleaseYear = Number(safeQueryValue(req.query.releaseYear) ?? DateTime.now().setZone(BERLIN_TZ).year);
+        const releaseYear = Number.isFinite(rawReleaseYear)
+          ? Math.max(1970, Math.min(Math.floor(rawReleaseYear), 2100))
+          : DateTime.now().setZone(BERLIN_TZ).year;
         const weekStart = req.query.weekStart
           ? String(safeQueryValue(req.query.weekStart))
           : DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();
@@ -347,9 +351,10 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             prevEndUtcIso: ranges.previous.endUtcIso,
             stationId,
             limit,
-            maxReleaseAgeDays
+            maxReleaseAgeDays,
+            releaseYear
           });
-          return res.json({ weekStart, stationId: stationId ?? null, maxReleaseAgeDays, rows });
+          return res.json({ weekStart, stationId: stationId ?? null, maxReleaseAgeDays, releaseYear, rows });
         } finally {
           db.close();
         }

@@ -50,6 +50,13 @@ function formatDateTime(iso) {
   return dt.toLocaleString('de-DE');
 }
 
+function releaseYear(iso) {
+  if (!iso) return null;
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.getUTCFullYear();
+}
+
 function ageInDays(iso) {
   if (!iso) return null;
   const dt = new Date(iso);
@@ -78,6 +85,7 @@ function filterRows() {
   const to = parseDateInput(qs('toInput').value, true);
   const q = qs('searchInput').value.trim().toLowerCase();
   const minPlays = Number(qs('minPlaysInput').value || '1');
+  const currentYear = new Date().getFullYear();
 
   filteredRows = allRows.filter((row) => {
     const first = row.first_played_at_utc ? new Date(row.first_played_at_utc) : null;
@@ -85,6 +93,7 @@ function filterRows() {
     if (from && first < from) return false;
     if (to && first > to) return false;
     if (Number(row.total_plays || 0) < minPlays) return false;
+    if (releaseYear(row.release_date_utc) !== currentYear) return false;
     if (!q) return true;
     const combined = `${row.artist || ''} ${row.title || ''}`.toLowerCase();
     return combined.includes(q);
@@ -125,6 +134,7 @@ function renderSpotlights() {
 
   top.forEach((row) => {
     const days = ageInDays(row.first_played_at_utc);
+    const rel = row.release_date_utc ? new Date(row.release_date_utc).toLocaleDateString('de-DE') : '-';
     const card = document.createElement('article');
     card.className = 'new-title-card';
     card.innerHTML = `
@@ -133,7 +143,7 @@ function renderSpotlights() {
         <a class="btn btn-outline-primary btn-sm" href="/dashboard?trackKey=${encodeURIComponent(row.track_key)}">Öffnen</a>
       </div>
       <h3 class="h6 mb-1">${row.artist} - ${row.title}</h3>
-      <p class="text-secondary mb-1">Erstes Play: ${formatDateTime(row.first_played_at_utc)}</p>
+      <p class="text-secondary mb-1">Release: ${rel} | Erstes Play: ${formatDateTime(row.first_played_at_utc)}</p>
       <p class="text-secondary mb-0">Plays: ${Number(row.total_plays || 0).toLocaleString('de-DE')} | ${daysText(days)}</p>
     `;
     box.appendChild(card);
@@ -147,8 +157,9 @@ function renderTable() {
   filteredRows.forEach((row) => {
     const tr = document.createElement('tr');
     const days = ageInDays(row.first_played_at_utc);
+    const rel = row.release_date_utc ? new Date(row.release_date_utc).toLocaleDateString('de-DE') : '-';
     tr.innerHTML = `
-      <td><strong>${row.artist}</strong><br><small>${row.title}</small></td>
+      <td><strong>${row.artist}</strong><br><small>${row.title}</small><br><small class="text-secondary">Release: ${rel}</small></td>
       <td>${Number(row.total_plays || 0).toLocaleString('de-DE')}</td>
       <td>${formatDateTime(row.first_played_at_utc)}</td>
       <td>${formatDateTime(row.last_played_at_utc)}</td>
@@ -159,8 +170,8 @@ function renderTable() {
   });
 
   qs('state').textContent = filteredRows.length
-    ? `${filteredRows.length.toLocaleString('de-DE')} neue Titel gefunden.`
-    : 'Keine neuen Titel im gewählten Zeitraum.';
+    ? `${filteredRows.length.toLocaleString('de-DE')} neue Titel gefunden (Release im aktuellen Jahr).`
+    : 'Keine neuen Titel im gewählten Zeitraum (nur Releases im aktuellen Jahr).';
 }
 
 function renderAll() {
