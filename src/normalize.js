@@ -13,7 +13,7 @@ const STATION_PROMO_PATTERN =
   /\b(deutschlands?\s+bigg?ste|radio|sender|station|berlin|baden[-\s]?württemberg|nrw|hamburg|sachsen|bayern|beats|hits)\b/i;
 const UNKNOWN_TRACK_PATTERN = /^(unknown|unbekannt|n\/a|na)$/i;
 const SERVICE_ANNOUNCEMENT_PATTERN =
-  /\b(anruf(?:en)?\s+im\s+verkehrszentrum|hotline|kontakt\s+zur|verkehrszentrum|staumelder|verkehrsservice|blitzer[-\s]?hotline)\b/i;
+  /\b(anruf(?:en)?\s+im\s+verkehrszentrum|jetzt\s+anrufen|hotline|kontakt\s+zur|verkehrszentrum|staumelder|verkehrsservice|blitzer[-\s]?hotline)\b/i;
 const PHONE_NUMBER_PATTERN =
   /\b(?:\+?\d{2,3}[\s\-]?)?(?:0\d{2,5}[\s\-]?\d{3,}(?:[\s\-]?\d{1,})*)\b/;
 const AD_BRAND_PATTERN =

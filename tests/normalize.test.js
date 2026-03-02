@@ -91,6 +91,7 @@ describe('normalizeArtistTitle', () => {
   it('marks hotline and traffic-center entries as noise', () => {
     expect(isLikelyNoiseTrack('anruf im verkehrszentrum', '0800 637 637 8')).toBe(true);
     expect(isLikelyNoiseTrack('hotline: 08000-210000', 'kontakt zur')).toBe(true);
+    expect(isLikelyNoiseTrack('jetzt anrufen !', '0331 70 97 110')).toBe(true);
   });
 
   it('marks ad and bulletin fragments as noise', () => {
