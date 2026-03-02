@@ -17,12 +17,12 @@
       <div class="container-fluid">
         <a class="navbar-brand fw-semibold" href="/new-titles">Music Scraper Neue Titel</a>
         <div class="d-flex align-items-center gap-2 ms-auto">
-          <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Dashboard</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Übersicht</a>
           <a class="btn btn-primary btn-sm" href="/new-titles">Neue Titel</a>
           <a class="btn btn-outline-secondary btn-sm" href="/backpool">Backpool</a>
-          <a class="btn btn-outline-secondary btn-sm" href="/tracks">Tracks</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/tracks">Titel</a>
           <a class="btn btn-outline-secondary btn-sm" href="/api/docs" target="_blank" rel="noreferrer">API</a>
-          <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dark</button>
+          <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dunkel</button>
         </div>
       </div>
     </nav>
@@ -31,7 +31,7 @@
       <section class="card shadow-sm mb-3">
         <div class="card-body">
           <h2 class="h5 mb-2">Neue Titel im Fokus</h2>
-          <p class="text-secondary mb-3">Zeigt Titel, deren erstes Play im gewählten Zeitraum liegt.</p>
+          <p class="text-secondary mb-3">Zeigt Titel, deren erster Einsatz im gewählten Zeitraum liegt.</p>
           <div class="row g-2 align-items-end">
             <div class="col-12 col-lg-3">
               <label class="form-label">Sender</label>
@@ -46,11 +46,11 @@
               <input id="toInput" class="form-control" type="date" />
             </div>
             <div class="col-6 col-lg-2">
-              <label class="form-label">Min. Plays</label>
+              <label class="form-label">Min. Einsätze</label>
               <input id="minPlaysInput" class="form-control" type="number" min="1" max="200" value="1" />
             </div>
             <div class="col-6 col-lg-2">
-              <label class="form-label">Limit</label>
+              <label class="form-label">Max. Titel</label>
               <select id="limitSelect" class="form-select">
                 <option value="100">100</option>
                 <option value="250" selected>250</option>
@@ -62,7 +62,7 @@
             </div>
             <div class="col-12">
               <label class="form-label">Suche</label>
-              <input id="searchInput" class="form-control" type="text" placeholder="artist oder titel" />
+              <input id="searchInput" class="form-control" type="text" placeholder="Interpret oder Titel" />
             </div>
           </div>
         </div>
@@ -77,7 +77,7 @@
         </div>
         <div class="col-6 col-xl-3">
           <article class="metric-box">
-            <div>Plays (neu)</div>
+            <div>Einsätze (neu)</div>
             <strong id="kpiNewPlays">-</strong>
           </article>
         </div>
@@ -110,10 +110,10 @@
             <table id="newTitlesTable" class="table table-hover align-middle mb-0">
               <thead>
                 <tr>
-                  <th>Track</th>
-                  <th>Plays</th>
-                  <th>Erstes Play</th>
-                  <th>Letztes Play</th>
+                  <th>Titel</th>
+                  <th>Einsätze</th>
+                  <th>Erster Einsatz</th>
+                  <th>Letzter Einsatz</th>
                   <th>Neu seit</th>
                   <th>Analyse</th>
                 </tr>

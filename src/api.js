@@ -13,6 +13,7 @@ import {
   getTrackIdentity,
   getTrackMetadata,
   getTrackStationCounts,
+  listNewTitles,
   getNewTracksInWeek,
   listBackpoolTrackCatalog,
   listBackpoolStationSummary
@@ -80,6 +81,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/docs',
           'GET /api/stations',
           'GET /api/tracks?limit=100&q=QUERY&stationId=ID',
+          'GET /api/new-titles?from=YYYY-MM-DD&to=YYYY-MM-DD&station=ID&limit=250&minPlays=1&q=QUERY',
           'GET /api/tracks/search?q=QUERY&limit=30',
           'GET /api/tracks/:trackKey/series?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/series-by-station?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=10',
@@ -126,6 +128,37 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         res.json(rows);
       } finally {
         db.close();
+      }
+    },
+
+    newTitles: (req, res) => {
+      try {
+        const from = req.query.from ? String(safeQueryValue(req.query.from)) : DateTime.now().setZone(BERLIN_TZ).minus({ days: 30 }).toISODate();
+        const to = req.query.to ? String(safeQueryValue(req.query.to)) : DateTime.now().setZone(BERLIN_TZ).toISODate();
+        const stationId = req.query.station ? String(safeQueryValue(req.query.station)) : undefined;
+        const query = String(safeQueryValue(req.query.q) ?? '').trim();
+        const rawLimit = Number(safeQueryValue(req.query.limit) ?? 250);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 250;
+        const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 1);
+        const minPlays = Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 5000)) : 1;
+        const { startUtcIso, endUtcIso } = parseRange(from, to);
+
+        const db = openDb(dbPath);
+        try {
+          const rows = listNewTitles(db, { startUtcIso, endUtcIso, stationId, query, minPlays, limit });
+          return res.json({
+            from,
+            to,
+            station: stationId ?? null,
+            limit,
+            minPlays,
+            rows
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
     },
 
@@ -622,6 +655,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/docs', handlers.docs);
   app.get('/api/stations', handlers.stations);
   app.get('/api/tracks', handlers.tracks);
+  app.get('/api/new-titles', handlers.newTitles);
   app.get('/api/tracks/search', handlers.search);
   app.get('/api/tracks/:trackKey/series', handlers.trackSeries);
   app.get('/api/tracks/:trackKey/series-by-station', handlers.trackSeriesByStation);

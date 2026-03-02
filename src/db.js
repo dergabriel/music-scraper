@@ -450,6 +450,69 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
   `);
 }
 
+export function listNewTitles(
+  db,
+  {
+    startUtcIso,
+    endUtcIso,
+    stationId,
+    query = '',
+    minPlays = 1,
+    limit = 250
+  } = {}
+) {
+  const parsedLimit = Math.max(1, Math.min(Number(limit) || 250, 5000));
+  const parsedMinPlays = Math.max(1, Math.min(Number(minPlays) || 1, 5000));
+  const hasQuery = String(query || '').trim().length > 0;
+  const sqlQuery = `%${String(query || '').trim()}%`;
+
+  const whereParts = [];
+  const params = [];
+
+  if (stationId) {
+    whereParts.push('p.station_id = ?');
+    params.push(stationId);
+  }
+  if (hasQuery) {
+    whereParts.push('(p.artist like ? or p.title like ?)');
+    params.push(sqlQuery, sqlQuery);
+  }
+
+  const whereSql = whereParts.length ? `where ${whereParts.join(' and ')}` : '';
+
+  const sql = `
+    select
+      p.track_key,
+      min(p.artist) as artist,
+      min(p.title) as title,
+      min(p.played_at_utc) as first_played_at_utc,
+      max(p.played_at_utc) as last_played_at_utc,
+      count(*) as total_plays,
+      count(distinct p.station_id) as station_count,
+      group_concat(distinct s.name) as stations_csv,
+      min(m.release_date_utc) as release_date_utc
+    from plays p
+    left join stations s on s.id = p.station_id
+    left join track_metadata m on m.track_key = p.track_key
+    ${whereSql}
+    group by p.track_key
+    having min(p.played_at_utc) >= ?
+      and min(p.played_at_utc) < ?
+      and count(*) >= ?
+    order by min(p.played_at_utc) desc, count(*) desc, artist asc, title asc
+    limit ?
+  `;
+
+  const rows = db.prepare(sql).all(...params, startUtcIso, endUtcIso, parsedMinPlays, parsedLimit);
+  return rows.map((row) => ({
+    ...row,
+    stations: String(row.stations_csv || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  }));
+}
+
 export function getTrackStationCounts(db, { trackKey, startUtcIso, endUtcIso }) {
   return db.prepare(`
     select

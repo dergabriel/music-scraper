@@ -154,6 +154,7 @@ describe('api handlers', () => {
     expect(routePaths).toContain('/tracks');
     expect(routePaths).toContain('/new-titles');
     expect(routePaths).toContain('/api/tracks');
+    expect(routePaths).toContain('/api/new-titles');
 
     const healthRes = mkRes();
     h.health({}, healthRes);
@@ -194,6 +195,23 @@ describe('api handlers', () => {
     expect(tracksRes.statusCode).toBe(200);
     expect(tracksRes.body.length).toBe(2);
     expect(tracksRes.body[0].track_key).toBe(trackKey);
+
+    const newTitlesRes = mkRes();
+    h.newTitles(
+      {
+        query: {
+          from: '2026-02-23',
+          to: '2026-02-24',
+          station: 'planet_radio',
+          limit: '100',
+          minPlays: '1'
+        }
+      },
+      newTitlesRes
+    );
+    expect(newTitlesRes.statusCode).toBe(200);
+    expect(Array.isArray(newTitlesRes.body.rows)).toBe(true);
+    expect(newTitlesRes.body.rows.some((row) => row.track_key === freshKey)).toBe(true);
 
     const seriesRes = mkRes();
     h.trackSeries(

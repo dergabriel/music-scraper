@@ -1,7 +1,20 @@
+import {
+  berlinIsoDate,
+  berlinTodayIsoDate,
+  berlinYesterdayIsoDate,
+  berlinYear,
+  shiftBerlinIsoDate,
+  weekStartBerlinIso
+} from './date-berlin.js';
+
 const qs = (id) => document.getElementById(id);
 const getQueryTrackKey = () => new URLSearchParams(window.location.search).get('trackKey');
 const requestedTrackKey = getQueryTrackKey();
 const focusedTrackMode = Boolean(getQueryTrackKey());
+
+function themeToggleText(theme) {
+  return theme === 'dark' ? 'Hell' : 'Dunkel';
+}
 
 function applyTheme() {
   const saved = localStorage.getItem('music-scraper-theme');
@@ -9,7 +22,7 @@ function applyTheme() {
   const theme = saved || (prefersDark ? 'dark' : 'light');
   document.documentElement.setAttribute('data-theme', theme);
   document.documentElement.setAttribute('data-bs-theme', theme);
-  qs('themeToggle').textContent = theme === 'dark' ? 'Light' : 'Dark';
+  qs('themeToggle').textContent = themeToggleText(theme);
 }
 
 function toggleTheme() {
@@ -18,7 +31,7 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', next);
   document.documentElement.setAttribute('data-bs-theme', next);
   localStorage.setItem('music-scraper-theme', next);
-  qs('themeToggle').textContent = next === 'dark' ? 'Light' : 'Dark';
+  qs('themeToggle').textContent = themeToggleText(next);
 }
 
 async function apiFetch(url, options) {
@@ -28,15 +41,6 @@ async function apiFetch(url, options) {
     throw new Error(body.error || `HTTP ${res.status}`);
   }
   return body;
-}
-
-function weekStartIso(date = new Date()) {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = (day + 6) % 7;
-  d.setDate(d.getDate() - diff);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
 }
 
 function fmtDate(iso) {
@@ -165,7 +169,12 @@ function appendChartStats(container, stats) {
     if (!item?.label) return;
     const chip = document.createElement('div');
     chip.className = 'chart-stat';
-    chip.innerHTML = `<span>${item.label}</span><strong>${item.value ?? '-'}</strong>`;
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    const value = document.createElement('strong');
+    value.textContent = item.value ?? '-';
+    chip.appendChild(label);
+    chip.appendChild(value);
     row.appendChild(chip);
   });
   if (row.children.length) {
@@ -198,7 +207,7 @@ function fillDailySeriesRange(series, fromIso, toIso) {
   const filled = [];
   const cursor = new Date(start.getTime());
   while (cursor <= end) {
-    const iso = cursor.toISOString().slice(0, 10);
+    const iso = berlinIsoDate(cursor);
     filled.push({ period: iso, plays: Number(valueByPeriod.get(iso) || 0) });
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
@@ -214,13 +223,6 @@ function toCumulativeSeries(series) {
       plays: total
     };
   });
-}
-
-function shiftIsoDate(isoDate, days) {
-  const base = new Date(`${isoDate}T12:00:00.000Z`);
-  if (Number.isNaN(base.getTime())) return isoDate;
-  base.setUTCDate(base.getUTCDate() + days);
-  return base.toISOString().slice(0, 10);
 }
 
 function renderTrackMetadata(metadata) {
@@ -246,14 +248,14 @@ function renderTrackMetadata(metadata) {
   }
 
   const items = [
-    ['Release', fmtReleaseDate(metadata.release_date_utc)],
+    ['Veröffentlichung', fmtReleaseDate(metadata.release_date_utc)],
     ['Genre', metadata.genre || '-'],
     ['Album', metadata.album || '-'],
     ['Label', metadata.label || '-'],
     ['Dauer', fmtDuration(metadata.duration_ms)],
     ['ISRC', metadata.isrc || '-'],
     ['Chart (DE)', metadata.chart_single_rank ? `#${metadata.chart_single_rank}` : '-'],
-    ['Confidence', Number.isFinite(metadata.verification_confidence) ? `${Math.round(metadata.verification_confidence * 100)}%` : '-']
+    ['Vertrauen', Number.isFinite(metadata.verification_confidence) ? `${Math.round(metadata.verification_confidence * 100)}%` : '-']
   ];
 
   items.forEach(([label, value]) => {
@@ -274,9 +276,9 @@ function renderTrackMetadata(metadata) {
     links.appendChild(b);
 
     const linkItems = [];
-    if (metadata.external_url) linkItems.push({ href: metadata.external_url, label: 'Track-Seite' });
-    if (metadata.preview_url) linkItems.push({ href: metadata.preview_url, label: 'Preview' });
-    if (metadata.artwork_url) linkItems.push({ href: metadata.artwork_url, label: 'Cover-URL' });
+    if (metadata.external_url) linkItems.push({ href: metadata.external_url, label: 'Titel-Seite' });
+    if (metadata.preview_url) linkItems.push({ href: metadata.preview_url, label: 'Vorhören' });
+    if (metadata.artwork_url) linkItems.push({ href: metadata.artwork_url, label: 'Cover-Link' });
 
     linkItems.forEach((link, idx) => {
       links.append(' ');
@@ -346,7 +348,7 @@ function renderLineChart(container, series, bucket = 'day', options = {}) {
     'text-anchor': 'middle',
     transform: `rotate(-90 16 ${pad.t + h / 2})`
   });
-  yLabel.textContent = 'Plays';
+  yLabel.textContent = 'Einsätze';
   svg.appendChild(yLabel);
 
   let d = '';
@@ -382,7 +384,7 @@ function renderLineChart(container, series, bucket = 'day', options = {}) {
     const dot = makeSvgEl('circle', { cx: p.x, cy: p.y, r: 3.8, fill: pointColor });
     svg.appendChild(hit);
     svg.appendChild(dot);
-    bindChartTooltip(container, hit, () => `${formatSeriesPeriod(p.period, bucket)}: ${formatPlays(p.plays)} Plays`);
+    bindChartTooltip(container, hit, () => `${formatSeriesPeriod(p.period, bucket)}: ${formatPlays(p.plays)} Einsätze`);
   });
 
   const last = points[points.length - 1];
@@ -465,7 +467,7 @@ function renderDailyBarChart(container, series, bucket = 'day', options = {}) {
       fill: barColor
     });
     svg.appendChild(rect);
-    bindChartTooltip(container, rect, () => `${formatSeriesPeriod(row.period, bucket)}: ${formatPlays(val)} Plays`);
+    bindChartTooltip(container, rect, () => `${formatSeriesPeriod(row.period, bucket)}: ${formatPlays(val)} Einsätze`);
   });
 
   const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 8, 'font-size': 12, 'text-anchor': 'middle' });
@@ -478,7 +480,7 @@ function renderDailyBarChart(container, series, bucket = 'day', options = {}) {
     'text-anchor': 'middle',
     transform: `rotate(-90 16 ${pad.t + h / 2})`
   });
-  yLabel.textContent = 'Plays / Tag';
+  yLabel.textContent = bucket === 'day' ? 'Einsätze / Tag' : 'Einsätze / Zeitraum';
   svg.appendChild(yLabel);
 
   container.appendChild(svg);
@@ -569,7 +571,7 @@ function renderSeriesByStationChart(container, rows, bucket = 'day') {
     'text-anchor': 'middle',
     transform: `rotate(-90 16 ${pad.t + h / 2})`
   });
-  yLabel.textContent = 'Plays';
+  yLabel.textContent = 'Einsätze';
   svg.appendChild(yLabel);
 
   prepared.forEach((row) => {
@@ -595,7 +597,7 @@ function renderSeriesByStationChart(container, rows, bucket = 'day') {
       const dot = makeSvgEl('circle', { cx: point.x, cy: point.y, r: 3, fill: color });
       svg.appendChild(dot);
       bindChartTooltip(container, dot, () =>
-        `${row.stationName} | ${formatSeriesPeriod(point.period, bucket)}: ${point.plays.toLocaleString('de-DE')} Plays`
+        `${row.stationName} | ${formatSeriesPeriod(point.period, bucket)}: ${point.plays.toLocaleString('de-DE')} Einsätze`
       );
     });
   });
@@ -610,7 +612,15 @@ function renderSeriesByStationChart(container, rows, bucket = 'day') {
     const item = document.createElement('span');
     item.className = 'badge text-bg-light';
     const color = colorByStation.get(row.stationId) || '#0ea5a4';
-    item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;"></span>${row.stationName} (${Number(row.totalPlays || 0).toLocaleString('de-DE')})`;
+    const dot = document.createElement('span');
+    dot.style.display = 'inline-block';
+    dot.style.width = '10px';
+    dot.style.height = '10px';
+    dot.style.borderRadius = '50%';
+    dot.style.background = color;
+    dot.style.marginRight = '6px';
+    item.appendChild(dot);
+    item.append(`${row.stationName} (${Number(row.totalPlays || 0).toLocaleString('de-DE')})`);
     legend.appendChild(item);
   });
   if (hiddenCount > 0) {
@@ -620,12 +630,6 @@ function renderSeriesByStationChart(container, rows, bucket = 'day') {
     legend.appendChild(more);
   }
   container.appendChild(legend);
-}
-
-function berlinYesterdayIso() {
-  const now = new Date();
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  return yesterday.toISOString().slice(0, 10);
 }
 
 function renderStationCompareChart(container, totalRows, yesterdayRows) {
@@ -702,7 +706,7 @@ function renderStationCompareChart(container, totalRows, yesterdayRows) {
       fill: '#f59e0b'
     });
     svg.appendChild(totalRect);
-    bindChartTooltip(container, totalRect, () => `${row.stationName}: Gesamt ${row.totalPlays.toLocaleString('de-DE')} Plays`);
+    bindChartTooltip(container, totalRect, () => `${row.stationName}: Gesamt ${row.totalPlays.toLocaleString('de-DE')} Einsätze`);
 
     if (row.yesterdayPlays > 0) {
       const yRect = makeSvgEl('rect', {
@@ -714,7 +718,7 @@ function renderStationCompareChart(container, totalRows, yesterdayRows) {
         fill: '#14b8a6'
       });
       svg.appendChild(yRect);
-      bindChartTooltip(container, yRect, () => `${row.stationName}: Gestern ${row.yesterdayPlays.toLocaleString('de-DE')} Plays`);
+      bindChartTooltip(container, yRect, () => `${row.stationName}: Gestern ${row.yesterdayPlays.toLocaleString('de-DE')} Einsätze`);
     }
 
     const val = makeSvgEl('text', { x: pad.l + Math.max(2, totalW) + 6, y: y + barH / 2 + 4, 'font-size': 11 });
@@ -723,7 +727,7 @@ function renderStationCompareChart(container, totalRows, yesterdayRows) {
   });
 
   const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 6, 'font-size': 12, 'text-anchor': 'middle' });
-  xLabel.textContent = 'Anzahl Plays';
+  xLabel.textContent = 'Anzahl Einsätze';
   svg.appendChild(xLabel);
 
   const yLabel = makeSvgEl('text', {
@@ -765,8 +769,8 @@ function renderBarChart(container, rows) {
   const topThree = prepared.slice(0, 3).reduce((sum, row) => sum + row.plays, 0);
   appendChartStats(container, [
     { label: 'Sender', value: formatPlays(prepared.length) },
-    { label: 'Top-Sender', value: `${topStation.stationName} (${formatPlays(topStation.plays)})` },
-    { label: 'Top 3 Anteil', value: `${totalPlays ? ((topThree / totalPlays) * 100).toFixed(1) : '0.0'}%` }
+    { label: 'Spitzen-Sender', value: `${topStation.stationName} (${formatPlays(topStation.plays)})` },
+    { label: 'Anteil der drei stärksten Sender', value: `${totalPlays ? ((topThree / totalPlays) * 100).toFixed(1) : '0.0'}%` }
   ]);
 
   const width = 980;
@@ -808,7 +812,7 @@ function renderBarChart(container, rows) {
   });
 
   const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 6, 'font-size': 12, 'text-anchor': 'middle' });
-  xLabel.textContent = 'Anzahl Plays';
+  xLabel.textContent = 'Anzahl Einsätze';
   svg.appendChild(xLabel);
 
   const yLabel = makeSvgEl('text', {
@@ -849,7 +853,7 @@ function renderBarChart(container, rows) {
     svg.appendChild(label);
     svg.appendChild(rect);
     svg.appendChild(val);
-    bindChartTooltip(container, rect, () => `${row.stationName}: ${playsValue} Plays (${pct}%)`);
+    bindChartTooltip(container, rect, () => `${row.stationName}: ${playsValue} Einsätze (${pct}%)`);
   });
 
   container.appendChild(svg);
@@ -866,16 +870,28 @@ function renderTrackList() {
   tbody.innerHTML = '';
 
   if (!tracks.length) {
-    qs('tracksState').textContent = 'Keine Tracks gefunden.';
+    qs('tracksState').textContent = 'Keine Treffer. Filter anpassen oder Ingest laufen lassen.';
     return;
   }
 
-  qs('tracksState').textContent = `${tracks.length} Tracks`;
+  qs('tracksState').textContent = `${tracks.length.toLocaleString('de-DE')} Titel gefunden.`;
 
   tracks.forEach((t) => {
     const tr = document.createElement('tr');
     if (selectedTrack?.track_key === t.track_key) tr.classList.add('selected');
-    tr.innerHTML = `<td><strong>${t.artist}</strong><br><small>${t.title}</small><br><small>${Number(t.total_plays || 0).toLocaleString('de-DE')} Plays</small></td>`;
+    const td = document.createElement('td');
+    const artist = document.createElement('strong');
+    artist.textContent = t.artist || '-';
+    const title = document.createElement('small');
+    title.textContent = t.title || '-';
+    const plays = document.createElement('small');
+    plays.textContent = `${formatPlays(t.total_plays)} Einsätze`;
+    td.appendChild(artist);
+    td.appendChild(document.createElement('br'));
+    td.appendChild(title);
+    td.appendChild(document.createElement('br'));
+    td.appendChild(plays);
+    tr.appendChild(td);
     tr.addEventListener('click', () => {
       selectedTrack = t;
       renderTrackList();
@@ -902,18 +918,28 @@ function renderOverview() {
   topList.innerHTML = '';
   const topRows = tracks.slice(0, 8);
   if (!topRows.length) {
-    topList.innerHTML = '<li>Keine Treffer.</li>';
+    const li = document.createElement('li');
+    li.textContent = 'Keine Treffer. Filter ändern oder später erneut laden.';
+    topList.appendChild(li);
     return;
   }
 
   topRows.forEach((row) => {
     const li = document.createElement('li');
-    li.innerHTML = `<button class="link-btn" type="button">${row.artist} - ${row.title} <small>(${Number(row.total_plays || 0).toLocaleString('de-DE')})</small></button>`;
-    li.querySelector('button').addEventListener('click', () => {
+    const button = document.createElement('button');
+    button.className = 'link-btn';
+    button.type = 'button';
+    const mainText = document.createTextNode(`${row.artist || '-'} - ${row.title || '-'} `);
+    const small = document.createElement('small');
+    small.textContent = `(${formatPlays(row.total_plays)})`;
+    button.appendChild(mainText);
+    button.appendChild(small);
+    button.addEventListener('click', () => {
       selectedTrack = row;
       renderTrackList();
       loadDetails();
     });
+    li.appendChild(button);
     topList.appendChild(li);
   });
 }
@@ -921,7 +947,11 @@ function renderOverview() {
 async function loadStations() {
   stations = await apiFetch('/api/stations');
   const select = qs('stationSelect');
-  select.innerHTML = '<option value="">Alle Sender</option>';
+  select.innerHTML = '';
+  const allOption = document.createElement('option');
+  allOption.value = '';
+  allOption.textContent = 'Alle Sender';
+  select.appendChild(allOption);
   stations.forEach((s) => {
     const opt = document.createElement('option');
     opt.value = s.id;
@@ -957,8 +987,8 @@ async function loadTracks() {
   if (selectedTrack) {
     await loadDetails();
   } else {
-    qs('selectedTitle').textContent = 'Song-Details';
-    qs('selectedMeta').textContent = 'Kein passender Song im aktuellen Filter gefunden.';
+    qs('selectedTitle').textContent = 'Titel-Details';
+    qs('selectedMeta').textContent = 'Kein passender Titel gefunden. Bitte Sender oder Suchbegriff anpassen.';
     renderTrackMetadata(null);
     renderLineChart(qs('seriesChart'), [], qs('bucketSelect')?.value || 'day');
     renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
@@ -970,9 +1000,9 @@ async function loadNewThisWeek() {
   const params = new URLSearchParams();
   const stationId = qs('stationSelect').value;
   if (stationId) params.set('stationId', stationId);
-  params.set('weekStart', weekStartIso());
+  params.set('weekStart', weekStartBerlinIso(new Date()));
   params.set('limit', '12');
-  params.set('releaseYear', String(new Date().getFullYear()));
+  params.set('releaseYear', String(berlinYear(new Date())));
 
   const data = await apiFetch(`/api/insights/new-this-week?${params.toString()}`);
   newWeekRows = data.rows || [];
@@ -981,19 +1011,28 @@ async function loadNewThisWeek() {
 
   newWeekRows.slice(0, 12).forEach((r) => {
     const li = document.createElement('li');
-    li.innerHTML = `<button class="link-btn" type="button">${r.artist} - ${r.title} <small>(${Number(r.plays || 0).toLocaleString('de-DE')})</small></button>`;
-    li.querySelector('button').addEventListener('click', () => {
+    const button = document.createElement('button');
+    button.className = 'link-btn';
+    button.type = 'button';
+    button.append(`${r.artist || '-'} - ${r.title || '-'} `);
+    const small = document.createElement('small');
+    small.textContent = `(${formatPlays(r.plays)})`;
+    button.appendChild(small);
+    button.addEventListener('click', () => {
       const hit = tracks.find((t) => t.track_key === r.track_key);
       if (hit) selectedTrack = hit;
       else selectedTrack = { track_key: r.track_key, artist: r.artist, title: r.title };
       renderTrackList();
       loadDetails();
     });
+    li.appendChild(button);
     ul.appendChild(li);
   });
 
   if (!ul.children.length) {
-    ul.innerHTML = '<li>Keine neuen Tracks.</li>';
+    const li = document.createElement('li');
+    li.textContent = 'Keine neuen Titel in dieser Woche.';
+    ul.appendChild(li);
   }
 }
 
@@ -1002,52 +1041,60 @@ async function loadDetails() {
   const trackKey = selectedTrack.track_key;
   if (!trackKey) return;
 
-  const params = new URLSearchParams();
-  const stationId = qs('stationSelect').value;
-  const bucket = qs('bucketSelect').value;
-  const selectedFrom = qs('fromInput').value || '';
-  const selectedTo = qs('toInput').value || '';
-  if (stationId) params.set('stationId', stationId);
-  params.set('bucket', bucket);
-  if (selectedFrom) params.set('from', selectedFrom);
-  if (selectedTo) params.set('to', selectedTo);
+  const bucket = qs('bucketSelect').value || 'day';
+  const range = getEffectiveDetailRange();
+  if (!range) {
+    qs('selectedMeta').textContent = 'Ungültiger Zeitraum. Bitte Von/Bis prüfen.';
+    renderLineChart(qs('seriesChart'), [], bucket);
+    renderDailyBarChart(qs('seriesByStationChart'), [], bucket);
+    renderBarChart(qs('stationsChart'), []);
+    return;
+  }
+  updateCutoffHint(range);
 
-  const yesterday = berlinYesterdayIso();
-  const cappedTo = selectedTo && selectedTo < yesterday ? selectedTo : yesterday;
-  const dailyFrom = selectedFrom || shiftIsoDate(cappedTo, -90);
-  const dailyParams = new URLSearchParams();
-  dailyParams.set('bucket', 'day');
-  dailyParams.set('from', dailyFrom);
-  dailyParams.set('to', cappedTo);
+  const detailsParams = new URLSearchParams();
+  detailsParams.set('bucket', bucket);
+  detailsParams.set('from', range.fromIso);
+  detailsParams.set('to', range.toIso);
+
+  const periodParams = new URLSearchParams();
+  periodParams.set('bucket', bucket);
+  periodParams.set('from', range.fromIso);
+  periodParams.set('to', range.toIso);
+
   const cumulativeParams = new URLSearchParams();
-  cumulativeParams.set('bucket', 'day');
+  cumulativeParams.set('bucket', bucket);
   cumulativeParams.set('from', '2000-01-01');
-  cumulativeParams.set('to', cappedTo);
+  cumulativeParams.set('to', range.toIso);
+
+  const stationParams = new URLSearchParams();
+  stationParams.set('from', range.fromIso);
+  stationParams.set('to', range.toIso);
 
   let totals;
   let cumulativeSeries;
-  let dailySeries;
+  let periodSeries;
   let stationsData;
   let metadata = null;
   try {
-    [totals, cumulativeSeries, dailySeries, stationsData] = await Promise.all([
-      apiFetch(`/api/tracks/${trackKey}/totals?${params.toString()}`),
+    [totals, cumulativeSeries, periodSeries, stationsData] = await Promise.all([
+      apiFetch(`/api/tracks/${trackKey}/totals?${detailsParams.toString()}`),
       apiFetch(`/api/tracks/${trackKey}/series?${cumulativeParams.toString()}`),
-      apiFetch(`/api/tracks/${trackKey}/series?${dailyParams.toString()}`),
-      apiFetch(`/api/tracks/${trackKey}/stations?${params.toString()}`),
+      apiFetch(`/api/tracks/${trackKey}/series?${periodParams.toString()}`),
+      apiFetch(`/api/tracks/${trackKey}/stations?${stationParams.toString()}`),
     ]);
   } catch (error) {
     const fallback = tracks[0] || null;
     if (requestedTrackKey && trackKey === requestedTrackKey) {
-      qs('selectedTitle').textContent = 'Song-Details';
-      qs('selectedMeta').textContent = `Track konnte nicht geladen werden (${error.message}).`;
+      qs('selectedTitle').textContent = 'Titel-Details';
+      qs('selectedMeta').textContent = `Titel konnte nicht geladen werden (${error.message}).`;
       qs('totalToday').textContent = '-';
       qs('totalWeek').textContent = '-';
       qs('totalYear').textContent = '-';
       qs('totalAll').textContent = '-';
       renderTrackMetadata(null);
-      renderLineChart(qs('seriesChart'), [], 'day');
-      renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
+      renderLineChart(qs('seriesChart'), [], bucket);
+      renderDailyBarChart(qs('seriesByStationChart'), [], bucket);
       renderBarChart(qs('stationsChart'), []);
       return;
     }
@@ -1056,15 +1103,15 @@ async function loadDetails() {
       renderTrackList();
       return loadDetails();
     }
-    qs('selectedTitle').textContent = 'Song-Details';
-    qs('selectedMeta').textContent = `Keine Detaildaten für den gewählten Song (${error.message}).`;
+    qs('selectedTitle').textContent = 'Titel-Details';
+    qs('selectedMeta').textContent = `Keine Detaildaten für den gewählten Titel (${error.message}).`;
     qs('totalToday').textContent = '-';
     qs('totalWeek').textContent = '-';
     qs('totalYear').textContent = '-';
     qs('totalAll').textContent = '-';
     renderTrackMetadata(null);
-    renderLineChart(qs('seriesChart'), [], 'day');
-    renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
+    renderLineChart(qs('seriesChart'), [], bucket);
+    renderDailyBarChart(qs('seriesByStationChart'), [], bucket);
     renderBarChart(qs('stationsChart'), []);
     return;
   }
@@ -1087,7 +1134,9 @@ async function loadDetails() {
   const identityArtist = totals.identity?.artist || selectedTrack.artist || '-';
   const identityTitle = totals.identity?.title || selectedTrack.title || '-';
   qs('selectedTitle').textContent = `${identityArtist} - ${identityTitle}`;
-  qs('selectedMeta').textContent = `Track Key: ${trackKey} | zuletzt: ${fmtDate(selectedTrack.last_played_at_utc)}`;
+  qs('selectedMeta').textContent =
+    `Titel-Schlüssel: ${trackKey} | Zeitraum: ${range.fromIso} bis ${range.toIso}${range.includeToday ? ' (inkl. heute)' : ' (bis gestern)'} | ` +
+    `zuletzt: ${fmtDate(selectedTrack.last_played_at_utc)}`;
 
   qs('totalToday').textContent = Number(totals.totals?.today || 0).toLocaleString('de-DE');
   qs('totalWeek').textContent = Number(totals.totals?.thisWeek || 0).toLocaleString('de-DE');
@@ -1098,40 +1147,97 @@ async function loadDetails() {
   const cumulativeRows = toCumulativeSeries(cumulativeSeries.series || []);
   const cumulativeStart = Number(cumulativeRows[0]?.plays || 0);
   const cumulativeEnd = Number(cumulativeRows[cumulativeRows.length - 1]?.plays || 0);
-  renderLineChart(qs('seriesChart'), cumulativeRows, 'day', {
+  renderLineChart(qs('seriesChart'), cumulativeRows, bucket, {
     showArea: true,
     color: '#0ea5a4',
     stats: [
-      { label: 'Stand', value: `${formatPlays(cumulativeEnd)} Plays` },
+      { label: 'Stand', value: `${formatPlays(cumulativeEnd)} Einsätze` },
       { label: 'Zuwachs', value: `+${formatPlays(Math.max(0, cumulativeEnd - cumulativeStart))}` },
       { label: 'Punkte', value: formatPlays(cumulativeRows.length) }
     ]
   });
 
-  const filledDailyRows = fillDailySeriesRange(dailySeries.series || [], dailyFrom, cappedTo);
-  const totalDaily = filledDailyRows.reduce((sum, row) => sum + Number(row.plays || 0), 0);
-  const avgDaily = filledDailyRows.length ? totalDaily / filledDailyRows.length : 0;
-  const peakDaily = filledDailyRows.reduce((best, row) => {
+  const rawPeriodRows = Array.isArray(periodSeries.series) ? periodSeries.series : [];
+  const normalizedPeriodRows = bucket === 'day'
+    ? fillDailySeriesRange(rawPeriodRows, range.fromIso, range.toIso)
+    : rawPeriodRows;
+  const totalInRange = normalizedPeriodRows.reduce((sum, row) => sum + Number(row.plays || 0), 0);
+  const avgInRange = normalizedPeriodRows.length ? totalInRange / normalizedPeriodRows.length : 0;
+  const peakPeriod = normalizedPeriodRows.reduce((best, row) => {
     const plays = Number(row.plays || 0);
     if (!best || plays > best.plays) return { period: row.period, plays };
     return best;
   }, null);
-  renderDailyBarChart(qs('seriesByStationChart'), filledDailyRows, 'day', {
+
+  renderDailyBarChart(qs('seriesByStationChart'), normalizedPeriodRows, bucket, {
     stats: [
-      { label: 'Tage', value: formatPlays(filledDailyRows.length) },
-      { label: 'Ø Plays/Tag', value: avgDaily.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) },
-      { label: 'Peak', value: peakDaily ? `${formatSeriesPeriod(peakDaily.period, 'day', true)} (${formatPlays(peakDaily.plays)})` : '-' }
+      { label: 'Zeiträume', value: formatPlays(normalizedPeriodRows.length) },
+      {
+        label: bucket === 'day' ? 'Ø Einsätze/Tag' : 'Ø Einsätze/Zeitraum',
+        value: avgInRange.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      },
+      {
+        label: 'Spitze',
+        value: peakPeriod ? `${formatSeriesPeriod(peakPeriod.period, bucket, true)} (${formatPlays(peakPeriod.plays)})` : '-'
+      }
     ]
   });
   renderBarChart(qs('stationsChart'), stationsData.stations || []);
 }
 
 function setDefaultDates() {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(to.getDate() - 90);
-  qs('fromInput').value = from.toISOString().slice(0, 10);
-  qs('toInput').value = to.toISOString().slice(0, 10);
+  const toIso = berlinTodayIsoDate();
+  const fromIso = shiftBerlinIsoDate(toIso, -90);
+  qs('fromInput').value = fromIso;
+  qs('toInput').value = toIso;
+  if (qs('includeTodayInput')) qs('includeTodayInput').checked = false;
+  updateCutoffHint(getEffectiveDetailRange());
+}
+
+function getEffectiveDetailRange() {
+  const includeToday = Boolean(qs('includeTodayInput')?.checked);
+  const todayIso = berlinTodayIsoDate();
+  const yesterdayIso = berlinYesterdayIsoDate();
+  const fromIso = qs('fromInput').value || shiftBerlinIsoDate(todayIso, -90);
+  const inputToIso = qs('toInput').value || todayIso;
+  const maxToIso = includeToday ? todayIso : yesterdayIso;
+  const toIso = inputToIso > maxToIso ? maxToIso : inputToIso;
+  const wasCapped = inputToIso > maxToIso;
+  if (!fromIso || !toIso || fromIso > toIso) return null;
+  return { fromIso, toIso, inputToIso, includeToday, wasCapped };
+}
+
+function updateCutoffHint(range) {
+  const hint = qs('cutoffHint');
+  if (!hint) return;
+  if (!range) {
+    hint.textContent = 'Bitte gültigen Zeitraum wählen.';
+    return;
+  }
+  if (range.includeToday) {
+    hint.textContent = `Zeitraum aktiv: ${range.fromIso} bis ${range.toIso} (laufender Tag eingeschlossen).`;
+    return;
+  }
+  if (range.wasCapped) {
+    hint.textContent = `Bis-Datum wurde auf gestern (${range.toIso}) gekürzt, damit der laufende Tag die Auswertung nicht verzerrt.`;
+    return;
+  }
+  hint.textContent = `Zeitraum aktiv: ${range.fromIso} bis ${range.toIso} (bis gestern).`;
+}
+
+function applyQuickRange(rangeId) {
+  const includeToday = Boolean(qs('includeTodayInput')?.checked);
+  const endIso = includeToday ? berlinTodayIsoDate() : berlinYesterdayIsoDate();
+  let startIso = shiftBerlinIsoDate(endIso, -89);
+  if (rangeId === '7') startIso = shiftBerlinIsoDate(endIso, -6);
+  if (rangeId === '30') startIso = shiftBerlinIsoDate(endIso, -29);
+  if (rangeId === '90') startIso = shiftBerlinIsoDate(endIso, -89);
+  if (rangeId === 'ytd') startIso = `${endIso.slice(0, 4)}-01-01`;
+
+  qs('fromInput').value = startIso;
+  qs('toInput').value = endIso;
+  updateCutoffHint(getEffectiveDetailRange());
+  return loadDetails();
 }
 
 function debounce(fn, delay = 280) {
@@ -1163,27 +1269,41 @@ async function init() {
     qs('tracksState').textContent = `Fehler beim Laden der Sender: ${msg}`;
   });
   await runSafe(loadTracks, (msg) => {
-    qs('tracksState').textContent = `Fehler: ${msg}`;
+    qs('tracksState').textContent = `Fehler beim Laden. Bitte später erneut versuchen (${msg}).`;
   });
 
-  qs('refreshBtn').addEventListener('click', () => runSafe(loadTracks, (msg) => {
-    qs('tracksState').textContent = `Fehler: ${msg}`;
+  qs('refreshTracksBtn').addEventListener('click', () => runSafe(loadTracks, (msg) => {
+    qs('tracksState').textContent = `Fehler beim Laden. Bitte später erneut versuchen (${msg}).`;
+  }));
+  qs('refreshDetailsBtn').addEventListener('click', () => runSafe(loadDetails, (msg) => {
+    qs('selectedMeta').textContent = `Fehler bei den Diagrammdaten: ${msg}`;
   }));
   qs('stationSelect').addEventListener('change', () => runSafe(loadTracks, (msg) => {
-    qs('tracksState').textContent = `Fehler: ${msg}`;
+    qs('tracksState').textContent = `Fehler beim Laden. Bitte später erneut versuchen (${msg}).`;
   }));
   qs('bucketSelect').addEventListener('change', () => runSafe(loadDetails, (msg) => {
-    qs('selectedMeta').textContent = `Fehler: ${msg}`;
+    qs('selectedMeta').textContent = `Fehler bei den Diagrammdaten: ${msg}`;
   }));
   qs('fromInput').addEventListener('change', () => runSafe(loadDetails, (msg) => {
-    qs('selectedMeta').textContent = `Fehler: ${msg}`;
+    qs('selectedMeta').textContent = `Fehler bei den Diagrammdaten: ${msg}`;
   }));
   qs('toInput').addEventListener('change', () => runSafe(loadDetails, (msg) => {
-    qs('selectedMeta').textContent = `Fehler: ${msg}`;
+    qs('selectedMeta').textContent = `Fehler bei den Diagrammdaten: ${msg}`;
+  }));
+  qs('includeTodayInput').addEventListener('change', () => runSafe(loadDetails, (msg) => {
+    qs('selectedMeta').textContent = `Fehler bei den Diagrammdaten: ${msg}`;
   }));
   qs('searchInput').addEventListener('input', debounce(() => runSafe(loadTracks, (msg) => {
-    qs('tracksState').textContent = `Fehler: ${msg}`;
+    qs('tracksState').textContent = `Fehler beim Laden. Bitte später erneut versuchen (${msg}).`;
   })));
+  document.querySelectorAll('.range-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const rangeId = button.getAttribute('data-range');
+      runSafe(() => applyQuickRange(rangeId), (msg) => {
+        qs('selectedMeta').textContent = `Fehler bei den Diagrammdaten: ${msg}`;
+      });
+    });
+  });
 }
 
 init().catch((error) => {

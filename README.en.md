@@ -54,6 +54,7 @@ node src/cli.js maintain-db --db yrpa.sqlite
 
 - Setup guide: [docs/setup.md](docs/setup.md)
 - API docs endpoint: `GET /api/docs`
+- New titles endpoint: `GET /api/new-titles?from=YYYY-MM-DD&to=YYYY-MM-DD&station=ID&limit=250`
 
 ## Privacy & Safe Publishing
 

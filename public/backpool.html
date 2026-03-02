@@ -17,12 +17,12 @@
       <div class="container-fluid">
         <a class="navbar-brand fw-semibold" href="/backpool">Music Scraper Backpool</a>
         <div class="d-flex align-items-center gap-2 ms-auto">
-          <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Dashboard</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Übersicht</a>
           <a class="btn btn-outline-secondary btn-sm" href="/new-titles">Neue Titel</a>
           <a class="btn btn-primary btn-sm" href="/backpool">Backpool</a>
-          <a class="btn btn-outline-secondary btn-sm" href="/tracks">Tracks</a>
+          <a class="btn btn-outline-secondary btn-sm" href="/tracks">Titel</a>
           <a class="btn btn-outline-secondary btn-sm" href="/api/docs" target="_blank" rel="noreferrer">API</a>
-          <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dark</button>
+          <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dunkel</button>
         </div>
       </div>
     </nav>
@@ -55,11 +55,11 @@
               <small id="presetHint" class="text-secondary"></small>
             </div>
             <div class="col-6 col-lg-1">
-              <label class="form-label">Min. Plays</label>
+              <label class="form-label">Min. Einsätze</label>
               <input id="minPlaysInput" class="form-control" type="number" min="1" max="500" value="1" />
             </div>
             <div class="col-6 col-lg-1">
-              <label class="form-label">Top</label>
+              <label class="form-label">Max. Titel</label>
               <input id="topInput" class="form-control" type="number" min="1" max="500" value="500" />
             </div>
             <div class="col-12 col-lg-2">
@@ -94,11 +94,11 @@
                     <input id="minTrackAgeDaysInput" class="form-control" type="number" min="1" max="3660" step="1" value="30" />
                   </div>
                   <div class="col-6 col-lg-2">
-                    <label class="form-label">Jahre (Legacy)</label>
+                    <label class="form-label">Jahre (Altlogik)</label>
                     <input id="yearsInput" class="form-control" type="number" min="1" max="40" value="5" />
                   </div>
                   <div class="col-6 col-lg-2">
-                    <label class="form-label">Min. Confidence</label>
+                    <label class="form-label">Min. Treffsicherheit</label>
                     <input id="minConfidenceInput" class="form-control" type="number" min="0" max="1" step="0.01" value="0.72" />
                   </div>
                   <div class="col-6 col-lg-2">
@@ -129,7 +129,7 @@
           <p id="state" class="text-secondary mb-2">Lade Backpool-Daten...</p>
           <p id="summary" class="mb-3"></p>
           <div class="mb-2">
-            <input id="backpoolSearchInput" class="form-control" type="text" placeholder="Backpool durchsuchen: artist, titel oder sender" />
+            <input id="backpoolSearchInput" class="form-control" type="text" placeholder="Backpool durchsuchen: Interpret, Titel oder Sender" />
           </div>
           <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
             <button id="sortModeBtn" class="btn btn-outline-secondary btn-sm" type="button">Senderweise sortieren</button>
@@ -140,9 +140,9 @@
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Song</th>
+                  <th>Titel</th>
                   <th>Sender</th>
-                  <th>Plays</th>
+                  <th>Einsätze</th>
                   <th>Ø/Tag</th>
                   <th>Aktive Tage</th>
                   <th>Spanntage</th>

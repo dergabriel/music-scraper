@@ -54,6 +54,7 @@ node src/cli.js maintain-db --db yrpa.sqlite
 
 - Setup: [docs/setup.md](docs/setup.md)
 - API-Endpunkte: `GET /api/docs`
+- Neue Titel direkt per API: `GET /api/new-titles?from=YYYY-MM-DD&to=YYYY-MM-DD&station=ID&limit=250`
 
 ## Datenschutz & sichere Veröffentlichung
 

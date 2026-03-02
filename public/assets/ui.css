@@ -192,6 +192,15 @@ body {
 
 #tracksTable tbody tr {
   cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+#tracksTable tbody tr:hover {
+  background: color-mix(in srgb, var(--bs-primary-bg-subtle) 55%, transparent);
+}
+
+#tracksTable tbody tr.selected {
+  background: color-mix(in srgb, var(--bs-warning-bg-subtle) 60%, transparent);
 }
 
 #tracksTable td {
@@ -239,6 +248,7 @@ body {
   width: 100%;
   height: auto;
   display: block;
+  min-width: 100%;
 }
 
 .chart-empty {
