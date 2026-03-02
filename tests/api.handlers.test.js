@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import pino from 'pino';
-import { openDb, upsertStation, insertPlayIgnore } from '../src/db.js';
+import { openDb, upsertStation, insertPlayIgnore, upsertTrackMetadata } from '../src/db.js';
 import { normalizeArtistTitle } from '../src/normalize.js';
 import { createApiApp, createApiHandlers } from '../src/api.js';
 
 function mkTmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-api-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-api-test-'));
 }
 
 function mkRes() {
@@ -82,6 +82,65 @@ describe('api handlers', () => {
       artistRaw: 'Bruno Mars',
       titleRaw: 'I Just Might'
     });
+    addPlay(db, {
+      stationId: 'planet_radio',
+      playedAtUtcIso: '2026-02-24T09:00:00.000Z',
+      artistRaw: 'The Newcomer',
+      titleRaw: 'Fresh Wave'
+    });
+
+    const oldKey = normalizeArtistTitle('Bruno Mars', 'I Just Might').trackKey;
+    const freshKey = normalizeArtistTitle('The Newcomer', 'Fresh Wave').trackKey;
+    upsertTrackMetadata(db, {
+      track_key: oldKey,
+      artist: 'bruno mars',
+      title: 'i just might',
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 0.99,
+      external_track_id: null,
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: '2020-01-01T00:00:00.000Z',
+      genre: 'Pop',
+      album: null,
+      label: null,
+      duration_ms: null,
+      preview_url: null,
+      isrc: null,
+      popularity_score: null,
+      chart_airplay_rank: null,
+      chart_single_rank: null,
+      chart_country: 'DE',
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-02-25T10:00:00.000Z'
+    });
+    upsertTrackMetadata(db, {
+      track_key: freshKey,
+      artist: 'the newcomer',
+      title: 'fresh wave',
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 0.99,
+      external_track_id: null,
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: '2025-12-01T00:00:00.000Z',
+      genre: 'Pop',
+      album: null,
+      label: null,
+      duration_ms: null,
+      preview_url: null,
+      isrc: null,
+      popularity_score: null,
+      chart_airplay_rank: null,
+      chart_single_rank: null,
+      chart_country: 'DE',
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-02-25T10:00:00.000Z'
+    });
     db.close();
 
     const logger = pino({ level: 'silent' });
@@ -112,6 +171,13 @@ describe('api handlers', () => {
     expect(stationsRes.statusCode).toBe(200);
     expect(stationsRes.body.length).toBe(1);
 
+    const newWeekRes = mkRes();
+    h.newThisWeek({ query: { weekStart: '2026-02-23', stationId: 'planet_radio', limit: '20' } }, newWeekRes);
+    expect(newWeekRes.statusCode).toBe(200);
+    expect(Array.isArray(newWeekRes.body.rows)).toBe(true);
+    expect(newWeekRes.body.rows.some((row) => row.track_key === oldKey)).toBe(false);
+    expect(newWeekRes.body.rows.some((row) => row.track_key === freshKey)).toBe(true);
+
     const searchBadRes = mkRes();
     h.search({ query: {} }, searchBadRes);
     expect(searchBadRes.statusCode).toBe(400);
@@ -126,7 +192,7 @@ describe('api handlers', () => {
     const tracksRes = mkRes();
     h.tracks({ query: { limit: '50' } }, tracksRes);
     expect(tracksRes.statusCode).toBe(200);
-    expect(tracksRes.body.length).toBe(1);
+    expect(tracksRes.body.length).toBe(2);
     expect(tracksRes.body[0].track_key).toBe(trackKey);
 
     const seriesRes = mkRes();
@@ -139,6 +205,18 @@ describe('api handlers', () => {
     );
     expect(seriesRes.statusCode).toBe(200);
     expect(seriesRes.body.series.length).toBeGreaterThan(0);
+
+    const seriesByStationRes = mkRes();
+    h.trackSeriesByStation(
+      {
+        params: { trackKey },
+        query: { bucket: 'day', from: '2026-02-22', to: '2026-02-24', limit: '10' }
+      },
+      seriesByStationRes
+    );
+    expect(seriesByStationRes.statusCode).toBe(200);
+    expect(Array.isArray(seriesByStationRes.body.stations)).toBe(true);
+    expect(seriesByStationRes.body.stations.length).toBeGreaterThan(0);
 
     const totalsRes = mkRes();
     h.trackTotals({ params: { trackKey }, query: { from: '2026-01-01', to: '2026-12-31' } }, totalsRes);

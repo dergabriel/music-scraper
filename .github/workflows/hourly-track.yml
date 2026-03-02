@@ -30,21 +30,21 @@ jobs:
         id: restore-db
         uses: actions/cache/restore@v4
         with:
-          path: data/yrpa.sqlite
-          key: juka-db-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          path: data/music-scraper.sqlite
+          key: music-scraper-db-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            juka-db-${{ runner.os }}-${{ github.ref_name }}-
+            music-scraper-db-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Run hourly ingest and maintenance
         run: |
-          node src/cli.js ingest --config config.yaml --db data/yrpa.sqlite
-          node src/cli.js maintain-db --db data/yrpa.sqlite
+          node src/cli.js ingest --config config.yaml --db data/music-scraper.sqlite
+          node src/cli.js maintain-db --db data/music-scraper.sqlite
 
       - name: Refresh backpool snapshot
         run: |
           node src/cli.js analyze-backpool \
             --config config.yaml \
-            --db data/yrpa.sqlite \
+            --db data/music-scraper.sqlite \
             --top 500 \
             --min-plays 1 \
             --rotation-min-release-age-days 1095 \
@@ -53,11 +53,11 @@ jobs:
       - name: Evaluate yesterday (Berlin)
         run: |
           YESTERDAY_BERLIN=$(node --input-type=module -e "import { DateTime } from 'luxon'; console.log(DateTime.now().setZone('Europe/Berlin').minus({ days: 1 }).toISODate());")
-          node src/cli.js evaluate-daily --config config.yaml --db data/yrpa.sqlite --date "$YESTERDAY_BERLIN"
+          node src/cli.js evaluate-daily --config config.yaml --db data/music-scraper.sqlite --date "$YESTERDAY_BERLIN"
 
       - name: Save SQLite cache
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: data/yrpa.sqlite
+          path: data/music-scraper.sqlite
           key: ${{ steps.restore-db.outputs.cache-primary-key }}

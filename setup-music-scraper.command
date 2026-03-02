@@ -16,20 +16,20 @@ fail() { echo -e "${RED}${BOLD}[FEHLER]${RESET} $1"; }
 
 on_error() {
   local exit_code=$?
-  fail "Daily-Job fehlgeschlagen (Exit Code ${exit_code})."
-  warn "Pruefe die letzte Fehlermeldung oben."
+  fail "Setup abgebrochen (Exit Code ${exit_code})."
+  warn "Pruefe die letzte Fehlermeldung oben und fuehre das Setup erneut aus."
 }
 trap on_error ERR
 
-echo -e "${BOLD}JUKA Daily Run${RESET} ${DIM}(Ingest + Daily Eval + Weekly Report)${RESET}"
+echo -e "${BOLD}Music Scraper Setup${RESET} ${DIM}(Dependencies + Tests)${RESET}"
+step "Installiere Abhaengigkeiten"
+npm install
+ok "Abhaengigkeiten installiert"
 
-if [ ! -d "node_modules" ]; then
-  step "Installiere Abhaengigkeiten (einmalig)"
-  npm install
-  ok "Abhaengigkeiten installiert"
-fi
+step "Starte Testlauf"
+npm test
+ok "Tests erfolgreich"
 
-step "Starte Daily-Job"
-node src/cli.js daily-job --config config.yaml --make-report
-ok "Daily-Job erfolgreich abgeschlossen"
-warn "Reports liegen in: reports/"
+echo
+ok "Setup erfolgreich abgeschlossen"
+warn "Als naechstes: start-music-scraper-api.command ausfuehren."

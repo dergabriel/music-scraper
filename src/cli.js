@@ -19,12 +19,12 @@ import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 const program = new Command();
-program.name('yrpa').description('JUKA Radio Playlist Analyzer').version('1.0.0');
+program.name('music-scraper').description('Music Scraper').version('1.0.0');
 
 program
   .command('ingest')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .action((opts) => {
     runIngest({ configPath: opts.config, dbPath: opts.db, logger }).catch((err) => {
       logger.error({ err: err.message }, 'ingest failed');
@@ -36,7 +36,7 @@ program
   .command('report')
   .requiredOption('--config <path>', 'Path to config.yaml')
   .requiredOption('--week-start <YYYY-MM-DD>', 'Week start date in Europe/Berlin')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--csv', 'Write CSV exports')
   .option('--gzip', 'Also write .gz compressed artifacts')
   .option('--gzip-only', 'Keep only .gz artifacts (remove plain .md/.csv)')
@@ -62,7 +62,7 @@ program
   .requiredOption('--config <path>', 'Path to config.yaml')
   .requiredOption('--station-id <id>', 'Station id, e.g. dlf_nova')
   .requiredOption('--week-start <YYYY-MM-DD>', 'Week start date in Europe/Berlin')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--gzip', 'Also write .gz compressed artifact')
   .option('--gzip-only', 'Keep only .gz artifact (remove plain .md)')
   .action((opts) => {
@@ -85,7 +85,7 @@ program
 program
   .command('evaluate-daily')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--date <YYYY-MM-DD>', 'Berlin date to evaluate (default: today in Europe/Berlin)')
   .action((opts) => {
     try {
@@ -99,7 +99,7 @@ program
 program
   .command('audit-coverage')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--date <YYYY-MM-DD>', 'Berlin day to audit (default: yesterday in Europe/Berlin)')
   .action((opts) => {
     try {
@@ -113,7 +113,7 @@ program
 program
   .command('analyze-backpool')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--from <YYYY-MM-DD>', 'Start date in Europe/Berlin (default: 365 days ago)')
   .option('--to <YYYY-MM-DD>', 'End date in Europe/Berlin (default: today)')
   .option('--years <number>', 'Backpool threshold age in years', '5')
@@ -159,7 +159,7 @@ program
 
 program
   .command('maintain-db')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--dry-run', 'Only report candidate merges, do not write changes')
   .option('--max-pairs <number>', 'Maximum swapped pairs to process in one run', '5000')
   .option('--min-score-gap <number>', 'Minimum score difference to merge a swapped pair', '0.35')
@@ -195,7 +195,7 @@ program
 program
   .command('daily-job')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--make-report', 'Also generate weekly report for current week')
   .option('--audit-coverage', 'Also run coverage audit for yesterday (Europe/Berlin)')
   .action(async (opts) => {
@@ -244,7 +244,7 @@ program
 program
   .command('cleanup-station')
   .requiredOption('--station-id <id>', 'Station id, e.g. dlf_nova')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .action((opts) => {
     try {
       const db = openDb(opts.db);
@@ -260,7 +260,7 @@ program
 program
   .command('api')
   .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'yrpa.sqlite')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--port <number>', 'API port', '8787')
   .option('--no-startup-report', 'Skip automatic ingest + evaluation + weekly report at API startup')
   .option('--schedule-daily', 'Run ingest + daily evaluation automatically at 23:00 Europe/Berlin')

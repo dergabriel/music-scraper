@@ -9,6 +9,12 @@ function bucketLabel(dt, bucket) {
   throw new Error(`Unsupported bucket: ${bucket}`);
 }
 
+function sortByPeriod(a, b) {
+  if (a.period < b.period) return -1;
+  if (a.period > b.period) return 1;
+  return 0;
+}
+
 export function buildTrackSeries(rows, bucket = 'day') {
   const byKey = new Map();
 
@@ -20,7 +26,44 @@ export function buildTrackSeries(rows, bucket = 'day') {
 
   return Array.from(byKey.entries())
     .map(([period, plays]) => ({ period, plays }))
-    .sort((a, b) => (a.period < b.period ? -1 : 1));
+    .sort(sortByPeriod);
+}
+
+export function buildTrackSeriesByStation(rows, stationsById = new Map(), bucket = 'day') {
+  const byStation = new Map();
+  const allPeriods = new Set();
+
+  for (const row of rows) {
+    const stationId = String(row.station_id || '');
+    if (!stationId) continue;
+    const dt = DateTime.fromISO(row.played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ);
+    const period = bucketLabel(dt, bucket);
+    allPeriods.add(period);
+    if (!byStation.has(stationId)) byStation.set(stationId, new Map());
+    const stationMap = byStation.get(stationId);
+    stationMap.set(period, (stationMap.get(period) ?? 0) + 1);
+  }
+
+  const periods = Array.from(allPeriods).sort();
+  const stations = Array.from(byStation.entries())
+    .map(([stationId, values]) => {
+      const series = periods.map((period) => ({ period, plays: Number(values.get(period) || 0) }));
+      return {
+        stationId,
+        stationName: stationsById.get(stationId) || stationId,
+        totalPlays: series.reduce((sum, row) => sum + Number(row.plays || 0), 0),
+        series
+      };
+    })
+    .sort((a, b) => {
+      if (b.totalPlays !== a.totalPlays) return b.totalPlays - a.totalPlays;
+      return String(a.stationName).localeCompare(String(b.stationName), 'de', { sensitivity: 'base' });
+    });
+
+  return {
+    periods,
+    stations
+  };
 }
 
 export function buildTrackTotals(rows) {

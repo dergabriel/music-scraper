@@ -4,7 +4,7 @@ const requestedTrackKey = getQueryTrackKey();
 const focusedTrackMode = Boolean(getQueryTrackKey());
 
 function applyTheme() {
-  const saved = localStorage.getItem('juka-theme');
+  const saved = localStorage.getItem('music-scraper-theme');
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   const theme = saved || (prefersDark ? 'dark' : 'light');
   document.documentElement.setAttribute('data-theme', theme);
@@ -17,7 +17,7 @@ function toggleTheme() {
   const next = current === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   document.documentElement.setAttribute('data-bs-theme', next);
-  localStorage.setItem('juka-theme', next);
+  localStorage.setItem('music-scraper-theme', next);
   qs('themeToggle').textContent = next === 'dark' ? 'Light' : 'Dark';
 }
 
@@ -259,6 +259,126 @@ function renderLineChart(container, series, bucket = 'day') {
   container.appendChild(svg);
 }
 
+function renderSeriesByStationChart(container, rows, bucket = 'day') {
+  container.innerHTML = '';
+  if (!Array.isArray(rows) || !rows.length) {
+    container.textContent = 'Keine Senderdaten im Zeitraum.';
+    return;
+  }
+
+  const prepared = rows
+    .map((row) => ({
+      stationId: row.stationId,
+      stationName: row.stationName || row.stationId,
+      totalPlays: Number(row.totalPlays || 0),
+      series: Array.isArray(row.series) ? row.series : []
+    }))
+    .filter((row) => row.series.length > 0)
+    .slice(0, 10);
+
+  if (!prepared.length) {
+    container.textContent = 'Keine Senderdaten im Zeitraum.';
+    return;
+  }
+
+  const periods = Array.from(new Set(prepared.flatMap((row) => row.series.map((p) => p.period)))).sort();
+  if (!periods.length) {
+    container.textContent = 'Keine Senderdaten im Zeitraum.';
+    return;
+  }
+
+  const width = 940;
+  const height = 300;
+  const pad = { t: 16, r: 16, b: 56, l: 54 };
+  const w = width - pad.l - pad.r;
+  const h = height - pad.t - pad.b;
+  const maxY = Math.max(
+    1,
+    ...prepared.flatMap((row) => row.series.map((point) => Number(point.plays || 0)))
+  );
+  const step = periods.length > 1 ? w / (periods.length - 1) : w;
+  const axisColor = '#7f95aa';
+  const colors = ['#0ea5a4', '#f59e0b', '#ef4444', '#8b5cf6', '#22c55e', '#3b82f6', '#e11d48', '#14b8a6', '#f97316', '#6366f1'];
+  const colorByStation = new Map(prepared.map((row, idx) => [row.stationId, colors[idx % colors.length]]));
+  const svg = makeSvg(width, height);
+
+  svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: pad.t, x2: pad.l, y2: pad.t + h, stroke: axisColor, 'stroke-width': 1 }));
+  svg.appendChild(makeSvgEl('line', { x1: pad.l, y1: pad.t + h, x2: pad.l + w, y2: pad.t + h, stroke: axisColor, 'stroke-width': 1 }));
+
+  const yTicks = 4;
+  for (let i = 0; i <= yTicks; i += 1) {
+    const val = Math.round((maxY * i) / yTicks);
+    const y = pad.t + h - (h * i) / yTicks;
+    svg.appendChild(makeSvgEl('line', { x1: pad.l - 4, y1: y, x2: pad.l, y2: y, stroke: axisColor }));
+    const label = makeSvgEl('text', { x: pad.l - 8, y: y + 4, 'font-size': 11, 'text-anchor': 'end' });
+    label.textContent = val.toLocaleString('de-DE');
+    svg.appendChild(label);
+  }
+
+  const xTickIndexes = Array.from(new Set([0, Math.floor((periods.length - 1) / 2), periods.length - 1])).filter((i) => i >= 0);
+  xTickIndexes.forEach((index) => {
+    const x = pad.l + index * step;
+    svg.appendChild(makeSvgEl('line', { x1: x, y1: pad.t + h, x2: x, y2: pad.t + h + 4, stroke: axisColor }));
+    const label = makeSvgEl('text', { x, y: pad.t + h + 17, 'font-size': 11, 'text-anchor': 'middle' });
+    label.textContent = formatSeriesPeriod(periods[index], bucket);
+    svg.appendChild(label);
+  });
+
+  const xLabel = makeSvgEl('text', { x: pad.l + w / 2, y: height - 8, 'font-size': 12, 'text-anchor': 'middle' });
+  xLabel.textContent = 'Zeitraum';
+  svg.appendChild(xLabel);
+  const yLabel = makeSvgEl('text', {
+    x: 16,
+    y: pad.t + h / 2,
+    'font-size': 12,
+    'text-anchor': 'middle',
+    transform: `rotate(-90 16 ${pad.t + h / 2})`
+  });
+  yLabel.textContent = 'Plays';
+  svg.appendChild(yLabel);
+
+  prepared.forEach((row) => {
+    const valueByPeriod = new Map(row.series.map((point) => [point.period, Number(point.plays || 0)]));
+    const color = colorByStation.get(row.stationId) || '#0ea5a4';
+    let pathData = '';
+    const points = periods.map((period, index) => {
+      const x = pad.l + index * step;
+      const plays = Number(valueByPeriod.get(period) || 0);
+      const y = pad.t + h - (plays / maxY) * h;
+      pathData += `${index === 0 ? 'M' : 'L'} ${x} ${y} `;
+      return { x, y, plays, period };
+    });
+    const path = makeSvgEl('path', {
+      d: pathData.trim(),
+      fill: 'none',
+      stroke: color,
+      'stroke-width': 2
+    });
+    svg.appendChild(path);
+
+    points.forEach((point) => {
+      const dot = makeSvgEl('circle', { cx: point.x, cy: point.y, r: 3, fill: color });
+      svg.appendChild(dot);
+      bindChartTooltip(container, dot, () =>
+        `${row.stationName} | ${formatSeriesPeriod(point.period, bucket)}: ${point.plays.toLocaleString('de-DE')} Plays`
+      );
+    });
+  });
+
+  container.appendChild(svg);
+
+  const legend = document.createElement('div');
+  legend.className = 'mt-2 d-flex flex-wrap gap-2';
+  prepared.forEach((row) => {
+    const item = document.createElement('span');
+    item.className = 'badge text-bg-light';
+    const color = colorByStation.get(row.stationId) || '#0ea5a4';
+    item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;"></span>${row.stationName} (${Number(row.totalPlays || 0).toLocaleString('de-DE')})`;
+    legend.appendChild(item);
+  });
+  container.appendChild(legend);
+}
+
 function renderBarChart(container, rows) {
   container.innerHTML = '';
   if (!rows?.length) {
@@ -347,6 +467,7 @@ let stations = [];
 let tracks = [];
 let selectedTrack = null;
 let newWeekRows = [];
+const metadataRefreshAttempted = new Set();
 
 function renderTrackList() {
   const tbody = qs('tracksTable').querySelector('tbody');
@@ -448,6 +569,7 @@ async function loadTracks() {
     qs('selectedMeta').textContent = 'Kein passender Song im aktuellen Filter gefunden.';
     renderTrackMetadata(null);
     renderLineChart(qs('seriesChart'), [], qs('bucketSelect')?.value || 'day');
+    renderSeriesByStationChart(qs('seriesByStationChart'), [], qs('bucketSelect')?.value || 'day');
     renderBarChart(qs('stationsChart'), []);
   }
 }
@@ -458,6 +580,7 @@ async function loadNewThisWeek() {
   if (stationId) params.set('stationId', stationId);
   params.set('weekStart', weekStartIso());
   params.set('limit', '12');
+  params.set('maxReleaseAgeDays', '730');
 
   const data = await apiFetch(`/api/insights/new-this-week?${params.toString()}`);
   newWeekRows = data.rows || [];
@@ -497,12 +620,14 @@ async function loadDetails() {
 
   let totals;
   let series;
+  let seriesByStation;
   let stationsData;
   let metadata = null;
   try {
-    [totals, series, stationsData] = await Promise.all([
+    [totals, series, seriesByStation, stationsData] = await Promise.all([
       apiFetch(`/api/tracks/${trackKey}/totals?${params.toString()}`),
       apiFetch(`/api/tracks/${trackKey}/series?${params.toString()}`),
+      apiFetch(`/api/tracks/${trackKey}/series-by-station?${params.toString()}&limit=10`),
       apiFetch(`/api/tracks/${trackKey}/stations?${params.toString()}`)
     ]);
   } catch (error) {
@@ -516,6 +641,7 @@ async function loadDetails() {
       qs('totalAll').textContent = '-';
       renderTrackMetadata(null);
       renderLineChart(qs('seriesChart'), [], bucket);
+      renderSeriesByStationChart(qs('seriesByStationChart'), [], bucket);
       renderBarChart(qs('stationsChart'), []);
       return;
     }
@@ -532,13 +658,22 @@ async function loadDetails() {
     qs('totalAll').textContent = '-';
     renderTrackMetadata(null);
     renderLineChart(qs('seriesChart'), [], bucket);
+    renderSeriesByStationChart(qs('seriesByStationChart'), [], bucket);
     renderBarChart(qs('stationsChart'), []);
     return;
   }
 
   try {
-    const metaResponse = await apiFetch(`/api/tracks/${trackKey}/meta/refresh`, { method: 'POST' });
+    const metaResponse = await apiFetch(`/api/tracks/${trackKey}/meta`);
     metadata = metaResponse.metadata || null;
+    const lastChecked = metadata?.last_checked_utc ? new Date(metadata.last_checked_utc) : null;
+    const ageMs = lastChecked && !Number.isNaN(lastChecked.getTime()) ? (Date.now() - lastChecked.getTime()) : Number.POSITIVE_INFINITY;
+    const needsRefresh = !metadata || ageMs > (7 * 24 * 60 * 60 * 1000);
+    if (needsRefresh && !metadataRefreshAttempted.has(trackKey)) {
+      metadataRefreshAttempted.add(trackKey);
+      const refreshed = await apiFetch(`/api/tracks/${trackKey}/meta/refresh`, { method: 'POST' });
+      metadata = refreshed.metadata || metadata;
+    }
   } catch {
     metadata = null;
   }
@@ -555,6 +690,7 @@ async function loadDetails() {
   renderTrackMetadata(metadata);
 
   renderLineChart(qs('seriesChart'), series.series || [], bucket);
+  renderSeriesByStationChart(qs('seriesByStationChart'), seriesByStation.stations || [], bucket);
   renderBarChart(qs('stationsChart'), stationsData.stations || []);
 }
 

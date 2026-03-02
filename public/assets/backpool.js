@@ -35,7 +35,7 @@ const ROTATION_PRESETS = {
 };
 
 function applyTheme() {
-  const saved = localStorage.getItem('juka-theme');
+  const saved = localStorage.getItem('music-scraper-theme');
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   const theme = saved || (prefersDark ? 'dark' : 'light');
   document.documentElement.setAttribute('data-theme', theme);
@@ -48,7 +48,7 @@ function toggleTheme() {
   const next = current === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   document.documentElement.setAttribute('data-bs-theme', next);
-  localStorage.setItem('juka-theme', next);
+  localStorage.setItem('music-scraper-theme', next);
   qs('themeToggle').textContent = next === 'dark' ? 'Light' : 'Dark';
 }
 

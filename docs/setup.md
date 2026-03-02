@@ -35,10 +35,10 @@ npm test
 ### 1. Ingest starten
 
 ```bash
-node src/cli.js ingest --config config.yaml --db yrpa.sqlite
+node src/cli.js ingest --config config.yaml --db music-scraper.sqlite
 ```
 
-Ergebnis: neue Plays landen in `yrpa.sqlite`.
+Ergebnis: neue Plays landen in `music-scraper.sqlite`.
 
 ### 2. Wochenreport erzeugen
 
@@ -65,13 +65,13 @@ Im Browser:
 
 ## macOS ohne Terminal (Doppelklick)
 
-1. `setup-juka.command` (einmalig)
-2. `start-juka-api.command`
+1. `setup-music-scraper.command` (einmalig)
+2. `start-music-scraper-api.command`
 3. Dashboard öffnen
 
 Manuell Tageslauf:
 
-1. `run-juka-daily-now.command`
+1. `run-music-scraper-daily-now.command`
 2. Ergebnisse in `reports/` prüfen
 
 ## Wichtige Commands
@@ -90,7 +90,7 @@ node src/cli.js analyze-backpool --config config.yaml
 node src/cli.js daily-job --config config.yaml --make-report --audit-coverage
 
 # Datenpflege (Dublettten/Noise)
-node src/cli.js maintain-db --db yrpa.sqlite
+node src/cli.js maintain-db --db music-scraper.sqlite
 ```
 
 ## Sender konfigurieren

@@ -785,7 +785,7 @@ export function runCoverageAudit({ configPath, dbPath, date, logger }) {
 
   const mdPath = path.resolve(`reports/coverage/${day}_coverage.md`);
   const lines = [
-    `# JUKA Coverage Audit ${day}`,
+    `# Music Scraper Coverage Audit ${day}`,
     '',
     '| Station | Plays | Covered Hours | Threshold Hours | Threshold Plays | Status |',
     '| --- | ---: | ---: | ---: | ---: | --- |'
@@ -1461,7 +1461,7 @@ export async function runBackpoolAnalysis({
   if (writeReport) {
     mdPath = path.resolve(`reports/backpool/${fromBerlin.toISODate()}_${toBerlin.toISODate()}_backpool.md`);
     const lines = [
-      `# JUKA Backpool Analysis ${fromBerlin.toISODate()} bis ${toBerlin.toISODate()}`,
+      `# Music Scraper Backpool Analysis ${fromBerlin.toISODate()} bis ${toBerlin.toISODate()}`,
       '',
       `- Primäre Definition (Rotation): Ø Plays/Tag **${rotationMinDaily.toFixed(2)} bis ${lowRotationMax.toFixed(2)}**, aktive Tage **>= ${rotationMinDays}**, Spannweite **>= ${rotationSpanMin} Tage**`,
       `- Neu-Filter: Titel muessen mind. **${trackAgeMin} Tage** im Senderverlauf vorhanden sein (adaptive Absenkung bei kurzer Historie moeglich).`,

@@ -25,8 +25,8 @@ function addPlay(db, { stationId, playedAtUtcIso, artistRaw, titleRaw, sourceUrl
 
 describe('e2e pipeline', () => {
   it('builds weekly analytics, report files, csv exports and preserves ingest idempotency', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-e2e-'));
-    const dbPath = path.join(tmp, 'yrpa.sqlite');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-e2e-'));
+    const dbPath = path.join(tmp, 'music-scraper.sqlite');
     const reportsDir = path.join(tmp, 'reports');
     const csvDir = path.join(reportsDir, 'csv');
 
@@ -148,7 +148,7 @@ describe('e2e pipeline', () => {
     expect(fs.existsSync(path.join(csvDir, 'overall_top_50.csv'))).toBe(true);
 
     const report = fs.readFileSync(reportPath, 'utf8');
-    expect(report).toContain('JUKA Radio Playlist Analyzer, Woche ab 2026-02-16');
+    expect(report).toContain('Music Scraper, Woche ab 2026-02-16');
     expect(report).toContain('## Deutschlandfunk Nova');
     expect(report).toContain('## FluxFM');
     expect(report).toContain('## Cross Station Trends');

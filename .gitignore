@@ -1,4 +1,9 @@
 node_modules/
 *.sqlite
+*.db
+data/
+.env
+.env.*
+*.log
 .DS_Store
 reports/

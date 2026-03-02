@@ -32,7 +32,7 @@ export function writeMarkdownReport({ weekStart, outputPath, stationAnalytics, c
     .slice(0, 5);
 
   const lines = [];
-  lines.push(`# JUKA Radio Playlist Analyzer, Woche ab ${weekStart}`);
+  lines.push(`# Music Scraper, Woche ab ${weekStart}`);
   lines.push('');
   lines.push('## Executive Summary');
   lines.push(`- Gesamt Plays (aktuelle Woche): **${totalPlaysAll}**`);
@@ -173,7 +173,7 @@ export function writeCsvExports({ csvDir, stationAnalytics, crossAnalytics }) {
 export function writeStationMarkdownReport({ stationResult, weekStart, outputPath }) {
   const s = stationResult;
   const lines = [];
-  lines.push(`# JUKA Station Report: ${s.station.name}, Woche ab ${weekStart}`);
+  lines.push(`# Music Scraper Station Report: ${s.station.name}, Woche ab ${weekStart}`);
   lines.push('');
   lines.push(`- totalPlays: **${s.totalPlays}**`);
   lines.push(`- uniqueTracks: **${s.uniqueTracks}**`);

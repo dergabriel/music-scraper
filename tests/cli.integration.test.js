@@ -10,7 +10,7 @@ import { normalizeArtistTitle } from '../src/normalize.js';
 const tmpDirs = [];
 
 function mkTmpDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-cli-int-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-cli-int-'));
   tmpDirs.push(dir);
   return dir;
 }
@@ -156,7 +156,7 @@ describe('CLI integration', () => {
       expect(fs.existsSync(stationCsv)).toBe(true);
 
       const md = fs.readFileSync(mdPath, 'utf8');
-      expect(md).toContain('JUKA Radio Playlist Analyzer, Woche ab 2026-02-16');
+      expect(md).toContain('Music Scraper, Woche ab 2026-02-16');
       expect(md).toContain('## OK DLF');
       expect(md).toContain('## OK Generic');
     },

@@ -25,7 +25,7 @@ function addPlay(db, { stationId, playedAtUtcIso, artistRaw, titleRaw }) {
 
 describe('database maintenance', () => {
   it('merges swapped artist-title track keys automatically', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-maintain-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-maintain-'));
     const dbPath = path.join(tmp, 'maint.sqlite');
     const db = openDb(dbPath);
     upsertStation(db, {
@@ -135,7 +135,7 @@ describe('database maintenance', () => {
   });
 
   it('removes garbage playlist rows with embedded website/script text', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-cleanup-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-cleanup-'));
     const dbPath = path.join(tmp, 'cleanup.sqlite');
     const db = openDb(dbPath);
     upsertStation(db, {
@@ -174,7 +174,7 @@ describe('database maintenance', () => {
   });
 
   it('merges promo-marker variants like *neu* into canonical track key', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-promo-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-promo-'));
     const dbPath = path.join(tmp, 'promo.sqlite');
     const db = openDb(dbPath);
     upsertStation(db, {
@@ -232,7 +232,7 @@ describe('database maintenance', () => {
   });
 
   it('merges quoted title variants into canonical track key', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yrpa-quotes-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-quotes-'));
     const dbPath = path.join(tmp, 'quotes.sqlite');
     const db = openDb(dbPath);
     upsertStation(db, {

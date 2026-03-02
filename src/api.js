@@ -17,7 +17,7 @@ import {
   listBackpoolStationSummary
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
-import { buildTrackSeries, buildTrackTotals } from './trends.js';
+import { buildTrackSeries, buildTrackSeriesByStation, buildTrackTotals } from './trends.js';
 import { runDailyEvaluation, runIngest, nextBerlinTime, runBackpoolAnalysis, runTrackOrientationMaintenance, runNoisePlayCleanup, runPromoMarkerMaintenance } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
@@ -72,7 +72,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
 
     docs: (_req, res) => {
       res.json({
-        name: 'JUKA Radio Playlist Analyzer API',
+        name: 'Music Scraper API',
         pages: ['GET /dashboard', 'GET /backpool', 'GET /tracks', 'GET /new-titles'],
         endpoints: [
           'GET /api/health',
@@ -81,12 +81,13 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/tracks?limit=100&q=QUERY&stationId=ID',
           'GET /api/tracks/search?q=QUERY&limit=30',
           'GET /api/tracks/:trackKey/series?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD',
+          'GET /api/tracks/:trackKey/series-by-station?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=10',
           'GET /api/tracks/:trackKey/totals?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/stations?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/meta',
           'POST /api/tracks/:trackKey/meta/refresh',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
-          'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20',
+          'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&maxReleaseAgeDays=730',
           'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationMinReleaseAgeDays=1095&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
           'GET /api/insights/backpool/catalog?stationId=ID&classification=rotation_backpool|hot_rotation|sparse_rotation&limit=500',
           'GET /api/insights/backpool/summary?stationId=ID',
@@ -200,6 +201,43 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       }
     },
 
+    trackSeriesByStation: (req, res) => {
+      try {
+        const trackKey = req.params.trackKey;
+        const bucket = String(safeQueryValue(req.query.bucket) ?? 'day');
+        if (!BUCKETS.has(bucket)) {
+          return res.status(400).json({ error: 'Invalid bucket. Use day|week|month|year.' });
+        }
+        const rawLimit = Number(safeQueryValue(req.query.limit) ?? 10);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 20)) : 10;
+        const { startUtcIso, endUtcIso } = parseRange(req.query.from, req.query.to);
+
+        const db = openDb(dbPath);
+        try {
+          const identity = getTrackIdentity(db, trackKey);
+          if (!identity?.artist || !identity?.title) {
+            return res.status(404).json({ error: 'Unknown trackKey' });
+          }
+
+          const rows = getTrackPlays(db, { trackKey, startUtcIso, endUtcIso });
+          const stationRows = listStations(db);
+          const stationsById = new Map(stationRows.map((row) => [row.id, row.name || row.id]));
+          const grouped = buildTrackSeriesByStation(rows, stationsById, bucket);
+          return res.json({
+            trackKey,
+            bucket,
+            identity,
+            periods: grouped.periods,
+            stations: grouped.stations.slice(0, limit)
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
     trackStations: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
@@ -291,6 +329,10 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
         const rawLimit = Number(safeQueryValue(req.query.limit) ?? 20);
         const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 100)) : 20;
+        const rawMaxReleaseAgeDays = Number(safeQueryValue(req.query.maxReleaseAgeDays) ?? 730);
+        const maxReleaseAgeDays = Number.isFinite(rawMaxReleaseAgeDays)
+          ? Math.max(1, Math.min(rawMaxReleaseAgeDays, 3650))
+          : 730;
         const weekStart = req.query.weekStart
           ? String(safeQueryValue(req.query.weekStart))
           : DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();
@@ -304,9 +346,10 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             prevStartUtcIso: ranges.previous.startUtcIso,
             prevEndUtcIso: ranges.previous.endUtcIso,
             stationId,
-            limit
+            limit,
+            maxReleaseAgeDays
           });
-          return res.json({ weekStart, stationId: stationId ?? null, rows });
+          return res.json({ weekStart, stationId: stationId ?? null, maxReleaseAgeDays, rows });
         } finally {
           db.close();
         }
@@ -568,6 +611,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/tracks', handlers.tracks);
   app.get('/api/tracks/search', handlers.search);
   app.get('/api/tracks/:trackKey/series', handlers.trackSeries);
+  app.get('/api/tracks/:trackKey/series-by-station', handlers.trackSeriesByStation);
   app.get('/api/tracks/:trackKey/totals', handlers.trackTotals);
   app.get('/api/tracks/:trackKey/stations', handlers.trackStations);
   app.get('/api/tracks/:trackKey/meta', handlers.trackMeta);

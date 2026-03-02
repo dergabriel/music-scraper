@@ -86,7 +86,7 @@ async function verifyWithItunes(track) {
   const term = encodeURIComponent(`${track.artist} ${track.title}`);
   const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=5&country=DE`;
   const res = await fetch(url, {
-    headers: { 'user-agent': 'yrpa/1.0 (+track-verifier)' },
+    headers: { 'user-agent': 'music-scraper/1.0 (+track-verifier)' },
     signal: AbortSignal.timeout(10000)
   });
   if (!res.ok) {
@@ -178,7 +178,7 @@ async function getAppleMusicChartFeed(country = 'de') {
 
   const url = `https://rss.applemarketingtools.com/api/v2/${country}/music/most-played/100/songs.json`;
   const res = await fetch(url, {
-    headers: { 'user-agent': 'yrpa/1.0 (+track-metadata)' },
+    headers: { 'user-agent': 'music-scraper/1.0 (+track-metadata)' },
     signal: AbortSignal.timeout(10000)
   });
 

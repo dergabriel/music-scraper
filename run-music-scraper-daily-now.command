@@ -16,12 +16,12 @@ fail() { echo -e "${RED}${BOLD}[FEHLER]${RESET} $1"; }
 
 on_error() {
   local exit_code=$?
-  fail "API-Start fehlgeschlagen (Exit Code ${exit_code})."
+  fail "Daily-Job fehlgeschlagen (Exit Code ${exit_code})."
   warn "Pruefe die letzte Fehlermeldung oben."
 }
 trap on_error ERR
 
-echo -e "${BOLD}JUKA API Start${RESET} ${DIM}(Dashboard + Scheduler)${RESET}"
+echo -e "${BOLD}Music Scraper Daily Run${RESET} ${DIM}(Ingest + Daily Eval + Weekly Report)${RESET}"
 
 if [ ! -d "node_modules" ]; then
   step "Installiere Abhaengigkeiten (einmalig)"
@@ -29,18 +29,7 @@ if [ ! -d "node_modules" ]; then
   ok "Abhaengigkeiten installiert"
 fi
 
-if ! node -e "require.resolve('express')" >/dev/null 2>&1; then
-  step "Fehlende Pakete erkannt - installiere nach"
-  npm install
-  ok "Pakete nachinstalliert"
-fi
-
-echo
-ok "API-Start wird vorbereitet"
-echo -e "${DIM}URL:${RESET} http://localhost:8787"
-echo -e "${DIM}Dashboard:${RESET} http://localhost:8787/dashboard"
-echo -e "${DIM}Backpool:${RESET} http://localhost:8787/backpool"
-echo -e "${DIM}Taeglicher Lauf:${RESET} 23:00 Europe/Berlin"
-echo
-step "Starte Server (CTRL+C zum Beenden)"
-node src/cli.js api --config config.yaml --port 8787 --schedule-daily --daily-hour 23
+step "Starte Daily-Job"
+node src/cli.js daily-job --config config.yaml --make-report
+ok "Daily-Job erfolgreich abgeschlossen"
+warn "Reports liegen in: reports/"

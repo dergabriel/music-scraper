@@ -1,93 +1,12 @@
-# JUKA Radio Playlist Analyzer (`yrpa`)
+# Music Scraper
 
-Ein Tool, das Radio-Playlisten automatisch sammelt, in einer Datenbank speichert und als Reports + Dashboard auswertet.
+Language / Sprache:
 
-Ziel: schnell sehen, **welche Songs wirklich laufen**, wie gut die Daten je Sender sind und wie sich Rotationen/Backpool entwickeln.
+- Deutsch: [README.de.md](README.de.md)
+- English: [README.en.md](README.en.md)
 
-## Was du sofort bekommst
+## Quick Links
 
-- automatisches Playlist-Ingest für mehrere Sender
-- saubere Historie in SQLite (`yrpa.sqlite`)
-- Web-Dashboard mit Track-Ansicht und Backpool-Analysen
-- tägliche Qualitätschecks (Coverage Audit)
-- Reports als Markdown/CSV
-
-## Schnellstart (2 Minuten)
-
-```bash
-npm install
-node src/cli.js api --config config.yaml --port 8787
-```
-
-Dann öffnen:
-
-- `http://localhost:8787/dashboard`
-- `http://localhost:8787/tracks`
-- `http://localhost:8787/api/docs`
-
-## Setup-Anleitung
-
-Die komplette Schritt-für-Schritt-Einrichtung ist hier:
-
-- [Setup Guide](docs/setup.md)
-
-Enthalten:
-
-- Installation (Node, npm)
-- erster Ingest + erster Report
-- API/Dashboard starten
-- macOS-Doppelklick-Variante (`*.command`)
-- typische Fehlerbehebung
-
-## GitHub Automation (temporär)
-
-Für automatisches Tracking über GitHub Actions sind zwei Workflows enthalten:
-
-- `.github/workflows/hourly-track.yml`  
-  Läuft stündlich (Minute `17`) und führt aus:
-  - Ingest
-  - `maintain-db`
-  - Backpool-Refresh
-  - Tagesauswertung für gestern (Europe/Berlin)
-- `.github/workflows/daily-report.yml`  
-  Läuft täglich und führt den Daily-Job inkl. Coverage + Report aus.
-
-Wichtig:
-
-- Die SQLite-DB wird zwischen Runs über den GitHub Cache gehalten (`data/yrpa.sqlite`).
-- Cron bei GitHub läuft in **UTC** (nicht Europe/Berlin).
-- Beim ersten Start einmal manuell über `Actions -> Run workflow` auslösen, damit der Cache aufgebaut wird.
-
-## Häufige Befehle
-
-```bash
-# Playlist-Daten holen
-node src/cli.js ingest --config config.yaml
-
-# Wochenreport erzeugen
-node src/cli.js report --config config.yaml --week-start 2026-02-24 --csv
-
-# Tagesauswertung (gestern)
-node src/cli.js evaluate-daily --config config.yaml --date 2026-02-27
-
-# Coverage-Audit (gestern)
-node src/cli.js audit-coverage --config config.yaml --date 2026-02-27
-
-# Backpool-Analyse
-node src/cli.js analyze-backpool --config config.yaml
-```
-
-## Projektstruktur (kurz)
-
-- `src/` Kernlogik (CLI, API, Parser, Services)
-- `config.yaml` Sender-Konfiguration
-- `reports/` erzeugte Reports
-- `tests/` Parser/Logik-Tests
-
-## Für Entwickler
-
-- Tests: `npm test`
-- Konfigurierbare Parser/Fetcher pro Sender
-- Datenpflege über `maintain-db`
-
-Details zu Commands, Cron und Sender-Erweiterungen stehen im Setup Guide.
+- Setup guide: [docs/setup.md](docs/setup.md)
+- Dashboard (local): `http://localhost:8787/dashboard`
+- API docs (local): `http://localhost:8787/api/docs`

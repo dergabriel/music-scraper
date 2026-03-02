@@ -1,10 +1,10 @@
 {
-  "name": "juka-radio-playlist-analyzer",
+  "name": "music-scraper",
   "version": "1.0.0",
   "description": "CLI tool to ingest radio playlists and generate weekly analytics reports.",
   "type": "module",
   "bin": {
-    "yrpa": "./src/cli.js"
+    "music-scraper": "./src/cli.js"
   },
   "scripts": {
     "api": "node src/cli.js api --config config.yaml --port 8787 --schedule-daily --daily-hour 23",

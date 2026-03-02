@@ -30,16 +30,16 @@ jobs:
         id: restore-db
         uses: actions/cache/restore@v4
         with:
-          path: data/yrpa.sqlite
-          key: juka-db-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          path: data/music-scraper.sqlite
+          key: music-scraper-db-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            juka-db-${{ runner.os }}-${{ github.ref_name }}-
+            music-scraper-db-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Run daily job
         run: |
           node src/cli.js daily-job \
             --config config.yaml \
-            --db data/yrpa.sqlite \
+            --db data/music-scraper.sqlite \
             --make-report \
             --audit-coverage
 
@@ -47,7 +47,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: juka-reports-${{ github.run_id }}
+          name: music-scraper-reports-${{ github.run_id }}
           path: reports
           if-no-files-found: ignore
           retention-days: 14
@@ -56,5 +56,5 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: data/yrpa.sqlite
+          path: data/music-scraper.sqlite
           key: ${{ steps.restore-db.outputs.cache-primary-key }}

@@ -441,8 +441,20 @@ export function getTrackStationCounts(db, { trackKey, startUtcIso, endUtcIso }) 
   `).all(trackKey, startUtcIso, endUtcIso);
 }
 
-export function getNewTracksInWeek(db, { startUtcIso, endUtcIso, prevStartUtcIso, prevEndUtcIso, stationId, limit = 50 }) {
+export function getNewTracksInWeek(
+  db,
+  {
+    startUtcIso,
+    endUtcIso,
+    prevStartUtcIso,
+    prevEndUtcIso,
+    stationId,
+    limit = 50,
+    maxReleaseAgeDays = 730
+  }
+) {
   const parsedLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
+  const parsedMaxReleaseAgeDays = Math.max(1, Math.min(Number(maxReleaseAgeDays) || 730, 3650));
 
   if (stationId) {
     return db.prepare(`
@@ -462,13 +474,26 @@ export function getNewTracksInWeek(db, { startUtcIso, endUtcIso, prevStartUtcIso
           and played_at_utc < ?
         group by track_key
       )
-      select c.track_key, c.artist, c.title, c.plays
+      select c.track_key, c.artist, c.title, c.plays, m.release_date_utc
       from current_week c
       left join previous_week p on p.track_key = c.track_key
+      left join track_metadata m on m.track_key = c.track_key
       where p.track_key is null
+        and m.release_date_utc is not null
+        and date(m.release_date_utc) >= date(?, '-' || ? || ' days')
       order by c.plays desc, c.artist asc, c.title asc
       limit ?
-    `).all(stationId, startUtcIso, endUtcIso, stationId, prevStartUtcIso, prevEndUtcIso, parsedLimit);
+    `).all(
+      stationId,
+      startUtcIso,
+      endUtcIso,
+      stationId,
+      prevStartUtcIso,
+      prevEndUtcIso,
+      endUtcIso,
+      parsedMaxReleaseAgeDays,
+      parsedLimit
+    );
   }
 
   return db.prepare(`
@@ -486,13 +511,16 @@ export function getNewTracksInWeek(db, { startUtcIso, endUtcIso, prevStartUtcIso
         and played_at_utc < ?
       group by track_key
     )
-    select c.track_key, c.artist, c.title, c.plays
+    select c.track_key, c.artist, c.title, c.plays, m.release_date_utc
     from current_week c
     left join previous_week p on p.track_key = c.track_key
+    left join track_metadata m on m.track_key = c.track_key
     where p.track_key is null
+      and m.release_date_utc is not null
+      and date(m.release_date_utc) >= date(?, '-' || ? || ' days')
     order by c.plays desc, c.artist asc, c.title asc
     limit ?
-  `).all(startUtcIso, endUtcIso, prevStartUtcIso, prevEndUtcIso, parsedLimit);
+  `).all(startUtcIso, endUtcIso, prevStartUtcIso, prevEndUtcIso, endUtcIso, parsedMaxReleaseAgeDays, parsedLimit);
 }
 
 export function dedupeStationToOnePlayPerMinute(db, stationId) {

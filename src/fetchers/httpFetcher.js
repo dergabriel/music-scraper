@@ -27,7 +27,7 @@ export class HttpFetcher {
         const res = await fetch(url, {
           headers: {
             'user-agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 yrpa/1.0',
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 music-scraper/1.0',
             'accept-language': 'de-DE,de;q=0.9,en;q=0.8',
             accept: 'text/html,application/xhtml+xml'
           },
