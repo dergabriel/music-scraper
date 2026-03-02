@@ -29,7 +29,7 @@ if [ ! -d "node_modules" ]; then
   ok "Abhaengigkeiten installiert"
 fi
 
-if ! node -e "require.resolve('express')" >/dev/null 2>&1; then
+if ! node -e "require.resolve('express'); require.resolve('node-cron')" >/dev/null 2>&1; then
   step "Fehlende Pakete erkannt - installiere nach"
   npm install
   ok "Pakete nachinstalliert"
@@ -40,7 +40,7 @@ ok "API-Start wird vorbereitet"
 echo -e "${DIM}URL:${RESET} http://localhost:8787"
 echo -e "${DIM}Dashboard:${RESET} http://localhost:8787/dashboard"
 echo -e "${DIM}Backpool:${RESET} http://localhost:8787/backpool"
-echo -e "${DIM}Taeglicher Lauf:${RESET} 23:00 Europe/Berlin"
+echo -e "${DIM}Interner Cron:${RESET} stuendlich zur vollen Stunde (0 * * * *)"
 echo
 step "Starte Server (CTRL+C zum Beenden)"
-node src/cli.js api --config config.yaml --port 8787 --schedule-daily --daily-hour 23
+node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787

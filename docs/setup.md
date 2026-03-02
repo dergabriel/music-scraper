@@ -35,10 +35,10 @@ npm test
 ### 1. Ingest starten
 
 ```bash
-node src/cli.js ingest --config config.yaml --db music-scraper.sqlite
+node src/cli.js ingest --config config.yaml --db yrpa.sqlite
 ```
 
-Ergebnis: neue Plays landen in `music-scraper.sqlite`.
+Ergebnis: neue Plays landen in `yrpa.sqlite`.
 
 ### 2. Wochenreport erzeugen
 
@@ -54,7 +54,7 @@ Ergebnis:
 ### 3. API + Dashboard starten
 
 ```bash
-node src/cli.js api --config config.yaml --port 8787
+node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787
 ```
 
 Im Browser:
@@ -90,7 +90,7 @@ node src/cli.js analyze-backpool --config config.yaml
 node src/cli.js daily-job --config config.yaml --make-report --audit-coverage
 
 # Datenpflege (Dublettten/Noise)
-node src/cli.js maintain-db --db music-scraper.sqlite
+node src/cli.js maintain-db --db yrpa.sqlite
 ```
 
 ## Sender konfigurieren

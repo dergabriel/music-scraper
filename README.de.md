@@ -7,13 +7,13 @@ Mit Music Scraper kannst du:
 - Playlists mehrerer Sender regelmäßig einlesen
 - Rotationen, neue Titel und Backpool analysieren
 - Ergebnisse im Web-Dashboard und per API ansehen
-- tägliche Reports/Checks automatisieren
+- ingest + DB-Pflege stündlich per internem Cron (kein externer Cron noetig)
 
 ## Schnellstart
 
 ```bash
 npm install
-node src/cli.js api --config config.yaml --port 8787
+node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787
 ```
 
 Danach im Browser:
@@ -35,19 +35,19 @@ Danach im Browser:
 
 ```bash
 # Playlist-Daten einlesen
-node src/cli.js ingest --config config.yaml --db music-scraper.sqlite
+node src/cli.js ingest --config config.yaml --db yrpa.sqlite
 
 # API + Dashboard starten
-node src/cli.js api --config config.yaml --db music-scraper.sqlite --port 8787
+node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787
 
 # Tagesjob (Ingest + Eval + optional Report/Audit)
-node src/cli.js daily-job --config config.yaml --db music-scraper.sqlite --make-report --audit-coverage
+node src/cli.js daily-job --config config.yaml --db yrpa.sqlite --make-report --audit-coverage
 
 # Backpool auswerten
-node src/cli.js analyze-backpool --config config.yaml --db music-scraper.sqlite
+node src/cli.js analyze-backpool --config config.yaml --db yrpa.sqlite
 
 # Datenpflege
-node src/cli.js maintain-db --db music-scraper.sqlite
+node src/cli.js maintain-db --db yrpa.sqlite
 ```
 
 ## Dokumentation
