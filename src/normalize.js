@@ -187,6 +187,53 @@ export function canonicalizeArtist(artistInput) {
   return unique.join(' & ');
 }
 
+export function getArtistParts(artistInput) {
+  const canonical = canonicalizeArtist(artistInput);
+  if (!canonical) return [];
+  return canonical
+    .split(/\s*&\s*/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+export function primaryArtist(artistInput) {
+  return getArtistParts(artistInput)[0] ?? '';
+}
+
+export function artistSet(artistInput) {
+  return new Set(getArtistParts(artistInput));
+}
+
+function artistTokensLooseMatch(a, b) {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+export function artistOverlapRatioLoose(a, b) {
+  const aa = Array.from(artistSet(a));
+  const bb = Array.from(artistSet(b));
+  if (!aa.length || !bb.length) return 0;
+
+  const used = new Set();
+  let common = 0;
+  for (const tokenA of aa) {
+    let matchedIndex = -1;
+    for (let i = 0; i < bb.length; i += 1) {
+      if (used.has(i)) continue;
+      if (artistTokensLooseMatch(tokenA, bb[i])) {
+        matchedIndex = i;
+        break;
+      }
+    }
+    if (matchedIndex >= 0) {
+      used.add(matchedIndex);
+      common += 1;
+    }
+  }
+  return common / Math.max(1, Math.min(aa.length, bb.length));
+}
+
 function stripDuplicatedArtistPrefix(title, artist) {
   const cleanTitle = clean(title);
   const cleanArtist = clean(artist);

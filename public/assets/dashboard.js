@@ -254,6 +254,10 @@ function renderTrackMetadata(metadata) {
     ['Label', metadata.label || '-'],
     ['Dauer', fmtDuration(metadata.duration_ms)],
     ['ISRC', metadata.isrc || '-'],
+    ['Spotify-ID', metadata.spotify_track_id || '-'],
+    ['Spotify-Confidence', Number.isFinite(metadata.spotify_confidence) ? `${Math.round(metadata.spotify_confidence * 100)}%` : '-'],
+    ['Canonical Quelle', metadata.canonical_source || '-'],
+    ['Canonical ID', metadata.canonical_id || '-'],
     ['Chart (DE)', metadata.chart_single_rank ? `#${metadata.chart_single_rank}` : '-'],
     ['Vertrauen', Number.isFinite(metadata.verification_confidence) ? `${Math.round(metadata.verification_confidence * 100)}%` : '-']
   ];
@@ -292,6 +296,57 @@ function renderTrackMetadata(metadata) {
     });
     list.appendChild(links);
   }
+}
+
+function trendBadgeLabel(status) {
+  if (status === 'hot') return 'Heiß';
+  if (status === 'dropping') return 'Fällt';
+  return 'Stabil';
+}
+
+function lifecycleBadgeLabel(status) {
+  if (status === 'new') return 'Neu';
+  if (status === 'active') return 'Aktiv';
+  if (status === 'declining') return 'Rückläufig';
+  return 'Katalog';
+}
+
+function renderTrackInsights({ trend = null, lifecycle = null, divergence = null } = {}) {
+  const trendBadge = qs('trendBadge');
+  const trendSummary = qs('trendSummary');
+  const lifecycleBadge = qs('lifecycleBadge');
+  const lifecycleSummary = qs('lifecycleSummary');
+  const divergenceTop = qs('divergenceTop');
+  const divergenceSummary = qs('divergenceSummary');
+  if (!trendBadge || !trendSummary || !lifecycleBadge || !lifecycleSummary || !divergenceTop || !divergenceSummary) return;
+
+  if (!trend) {
+    trendBadge.textContent = '-';
+    trendSummary.textContent = '-';
+  } else {
+    trendBadge.textContent = trendBadgeLabel(trend.status);
+    trendSummary.textContent =
+      `${formatPlays(trend.plays_last_48h)} Einsätze | Wachstum ${Number(trend.growth_percent || 0).toLocaleString('de-DE', { maximumFractionDigits: 1 })}%`;
+  }
+
+  if (!lifecycle) {
+    lifecycleBadge.textContent = '-';
+    lifecycleSummary.textContent = '-';
+  } else {
+    lifecycleBadge.textContent = lifecycleBadgeLabel(lifecycle.status);
+    lifecycleSummary.textContent = `Alter ${formatPlays(lifecycle.age_days)} Tage | Letztes Play vor ${formatPlays(lifecycle.days_since_last_play ?? 0)} Tagen`;
+  }
+
+  const divergenceRows = Array.isArray(divergence?.rows) ? divergence.rows : [];
+  if (!divergenceRows.length) {
+    divergenceTop.textContent = '-';
+    divergenceSummary.textContent = 'Keine Abweichungen im 7-Tage-Fenster.';
+    return;
+  }
+  const top = divergenceRows[0];
+  divergenceTop.textContent = `${top.station_name} (${Number(top.deviation_percent || 0).toLocaleString('de-DE', { maximumFractionDigits: 1 })}%)`;
+  const strongCount = divergenceRows.filter((row) => Math.abs(Number(row.deviation_percent || 0)) >= 25).length;
+  divergenceSummary.textContent = `${formatPlays(strongCount)} Sender mit deutlicher Abweichung (±25%).`;
 }
 
 function renderLineChart(container, series, bucket = 'day', options = {}) {
@@ -990,6 +1045,7 @@ async function loadTracks() {
     qs('selectedTitle').textContent = 'Titel-Details';
     qs('selectedMeta').textContent = 'Kein passender Titel gefunden. Bitte Sender oder Suchbegriff anpassen.';
     renderTrackMetadata(null);
+    renderTrackInsights(null);
     renderLineChart(qs('seriesChart'), [], qs('bucketSelect')?.value || 'day');
     renderDailyBarChart(qs('seriesByStationChart'), [], 'day');
     renderBarChart(qs('stationsChart'), []);
@@ -1045,6 +1101,7 @@ async function loadDetails() {
   const range = getEffectiveDetailRange();
   if (!range) {
     qs('selectedMeta').textContent = 'Ungültiger Zeitraum. Bitte Von/Bis prüfen.';
+    renderTrackInsights(null);
     renderLineChart(qs('seriesChart'), [], bucket);
     renderDailyBarChart(qs('seriesByStationChart'), [], bucket);
     renderBarChart(qs('stationsChart'), []);
@@ -1075,13 +1132,19 @@ async function loadDetails() {
   let cumulativeSeries;
   let periodSeries;
   let stationsData;
+  let trendData;
+  let lifecycleData;
+  let divergenceData;
   let metadata = null;
   try {
-    [totals, cumulativeSeries, periodSeries, stationsData] = await Promise.all([
+    [totals, cumulativeSeries, periodSeries, stationsData, trendData, lifecycleData, divergenceData] = await Promise.all([
       apiFetch(`/api/tracks/${trackKey}/totals?${detailsParams.toString()}`),
       apiFetch(`/api/tracks/${trackKey}/series?${cumulativeParams.toString()}`),
       apiFetch(`/api/tracks/${trackKey}/series?${periodParams.toString()}`),
       apiFetch(`/api/tracks/${trackKey}/stations?${stationParams.toString()}`),
+      apiFetch(`/api/tracks/${trackKey}/trend`),
+      apiFetch(`/api/tracks/${trackKey}/lifecycle`),
+      apiFetch(`/api/tracks/${trackKey}/station-divergence`),
     ]);
   } catch (error) {
     const fallback = tracks[0] || null;
@@ -1093,6 +1156,7 @@ async function loadDetails() {
       qs('totalYear').textContent = '-';
       qs('totalAll').textContent = '-';
       renderTrackMetadata(null);
+      renderTrackInsights(null);
       renderLineChart(qs('seriesChart'), [], bucket);
       renderDailyBarChart(qs('seriesByStationChart'), [], bucket);
       renderBarChart(qs('stationsChart'), []);
@@ -1110,6 +1174,7 @@ async function loadDetails() {
     qs('totalYear').textContent = '-';
     qs('totalAll').textContent = '-';
     renderTrackMetadata(null);
+    renderTrackInsights(null);
     renderLineChart(qs('seriesChart'), [], bucket);
     renderDailyBarChart(qs('seriesByStationChart'), [], bucket);
     renderBarChart(qs('stationsChart'), []);
@@ -1143,6 +1208,11 @@ async function loadDetails() {
   qs('totalYear').textContent = Number(totals.totals?.thisYear || 0).toLocaleString('de-DE');
   qs('totalAll').textContent = Number(totals.totals?.allTime || 0).toLocaleString('de-DE');
   renderTrackMetadata(metadata);
+  renderTrackInsights({
+    trend: trendData,
+    lifecycle: lifecycleData,
+    divergence: divergenceData
+  });
 
   const cumulativeRows = toCumulativeSeries(cumulativeSeries.series || []);
   const cumulativeStart = Number(cumulativeRows[0]?.plays || 0);

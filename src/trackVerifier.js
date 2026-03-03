@@ -1,6 +1,7 @@
 import { fetch } from 'undici';
 import { isoUtcNow } from './time.js';
 import { getTrackMetadata, upsertTrackMetadata } from './db.js';
+import { searchTrackOnSpotify } from './integrations/spotify.js';
 
 const CHART_FEED_CACHE_MS = 30 * 60 * 1000;
 const CHART_FEED_BACKOFF_MS = 15 * 60 * 1000;
@@ -47,7 +48,7 @@ function overlapScore(a, b) {
   return common / Math.max(aa.size, bb.size);
 }
 
-function toDbRow(track, result) {
+function toDbRow(track, result, cached = null) {
   return {
     track_key: track.trackKey,
     artist: track.artist,
@@ -64,7 +65,13 @@ function toDbRow(track, result) {
     label: result.label ?? null,
     duration_ms: Number.isFinite(result.durationMs) ? Math.round(result.durationMs) : null,
     preview_url: result.previewUrl ?? null,
-    isrc: result.isrc ?? null,
+    isrc: result.isrc ?? cached?.isrc ?? null,
+    spotify_track_id: result.spotifyTrackId ?? cached?.spotify_track_id ?? null,
+    spotify_confidence: Number.isFinite(result.spotifyConfidence)
+      ? result.spotifyConfidence
+      : (Number.isFinite(cached?.spotify_confidence) ? Number(cached.spotify_confidence) : null),
+    canonical_source: result.canonicalSource ?? cached?.canonical_source ?? null,
+    canonical_id: result.canonicalId ?? cached?.canonical_id ?? null,
     popularity_score: Number.isFinite(result.popularityScore) ? result.popularityScore : null,
     chart_airplay_rank: result.chartAirplayRank ?? null,
     chart_single_rank: result.chartSingleRank ?? null,
@@ -304,7 +311,7 @@ export class TrackVerifier {
 
     try {
       const result = await verifyWithItunes(track);
-      upsertTrackMetadata(this.db, toDbRow(track, result));
+      upsertTrackMetadata(this.db, toDbRow(track, result, cached));
       return { ...result, fromCache: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -314,7 +321,7 @@ export class TrackVerifier {
         confidence: null,
         source: 'itunes_error',
         payloadJson: JSON.stringify({ error: message })
-      }));
+      }, cached));
       return { verifiedExists: null, confidence: null, source: 'itunes_error', fromCache: false };
     }
   }
@@ -352,7 +359,7 @@ export class TrackVerifier {
         genre: cached?.genre ?? null,
         album: cached?.album ?? null,
         payloadJson: JSON.stringify({ error: message })
-      }));
+      }, cached));
       return { metadata: getTrackMetadata(this.db, track.trackKey), fromCache: false };
     }
 
@@ -373,7 +380,30 @@ export class TrackVerifier {
     }
 
     const merged = mergeMetadataResult(result, chart, 'itunes');
-    upsertTrackMetadata(this.db, toDbRow(track, merged));
+    let spotifyMatch = null;
+    try {
+      spotifyMatch = await searchTrackOnSpotify(track.artist, track.title, {
+        durationMs: Number.isFinite(merged.durationMs) ? Number(merged.durationMs) : null
+      });
+    } catch (error) {
+      if (!quietErrors) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger?.warn({ error: message, trackKey: track.trackKey }, 'spotify enrichment skipped');
+      }
+    }
+
+    const finalResult = spotifyMatch
+      ? {
+          ...merged,
+          isrc: spotifyMatch.isrc || merged.isrc,
+          spotifyTrackId: spotifyMatch.spotifyTrackId,
+          spotifyConfidence: spotifyMatch.confidence,
+          canonicalSource: spotifyMatch.canonicalSource,
+          canonicalId: spotifyMatch.canonicalId || merged.isrc || null
+        }
+      : merged;
+
+    upsertTrackMetadata(this.db, toDbRow(track, finalResult, cached));
     return { metadata: getTrackMetadata(this.db, track.trackKey), fromCache: false };
   }
 }

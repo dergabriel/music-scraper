@@ -78,6 +78,26 @@
         </div>
       </section>
 
+      <section class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h2 class="h5 mb-3">Power Admin: Manuelles Zusammenführen</h2>
+          <div class="row g-2 align-items-end">
+            <div class="col-12 col-lg-5">
+              <label class="form-label">Winner Track Key</label>
+              <input id="winnerTrackKeyInput" class="form-control" type="text" placeholder="Track-Key, der bleiben soll" />
+            </div>
+            <div class="col-12 col-lg-5">
+              <label class="form-label">Loser Track Key</label>
+              <input id="loserTrackKeyInput" class="form-control" type="text" placeholder="Track-Key, der gemerged wird" />
+            </div>
+            <div class="col-12 col-lg-2">
+              <button id="mergeTracksBtn" class="btn btn-outline-danger w-100" type="button">Merge</button>
+            </div>
+          </div>
+          <p id="mergeState" class="text-secondary mb-0 mt-2">Noch kein manueller Merge ausgeführt.</p>
+        </div>
+      </section>
+
       <section class="card shadow-sm mb-3" id="statsCard">
         <div class="card-body">
           <h2 class="h5 mb-3">Übersicht</h2>

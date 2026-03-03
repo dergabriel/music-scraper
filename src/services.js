@@ -2,7 +2,14 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { DateTime } from 'luxon';
 import { loadConfig } from './config.js';
-import { isLikelyNoiseTrack, isLikelyJingleLike, normalizeArtistTitle } from './normalize.js';
+import {
+  isLikelyNoiseTrack,
+  isLikelyJingleLike,
+  normalizeArtistTitle,
+  primaryArtist,
+  artistSet,
+  artistOverlapRatioLoose
+} from './normalize.js';
 import {
   openDb,
   upsertStation,
@@ -229,21 +236,6 @@ function artistOverlapRatio(a, b) {
   return common / Math.max(1, Math.min(aa.size, bb.size));
 }
 
-function splitCanonicalArtistParts(value) {
-  return String(value ?? '')
-    .split(/\s*&\s*/g)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function primaryArtist(value) {
-  return splitCanonicalArtistParts(value)[0] ?? '';
-}
-
-function artistSet(value) {
-  return new Set(splitCanonicalArtistParts(value));
-}
-
 function normalizeTitleForMatch(value) {
   return normalizeArtistTitle('', value).title;
 }
@@ -253,41 +245,13 @@ function canonicalMapKey(canonicalTitle, canonicalPrimaryArtist) {
 }
 
 function trackCanonicalId(metaRow) {
+  const canonicalId = String(metaRow?.canonical_id ?? '').trim().toLowerCase();
+  if (canonicalId) return canonicalId;
   const isrc = String(metaRow?.isrc ?? '').trim().toLowerCase();
   if (isrc) return `isrc:${isrc}`;
   const external = String(metaRow?.external_track_id ?? '').trim().toLowerCase();
   if (external) return `external:${external}`;
   return null;
-}
-
-function artistTokensLooseMatch(a, b) {
-  if (a === b) return true;
-  if (a.length < 4 || b.length < 4) return false;
-  return a.startsWith(b) || b.startsWith(a);
-}
-
-function artistOverlapRatioLoose(a, b) {
-  const aa = Array.from(artistTokenSet(a));
-  const bb = Array.from(artistTokenSet(b));
-  if (!aa.length || !bb.length) return 0;
-
-  const used = new Set();
-  let common = 0;
-  for (const tokenA of aa) {
-    let matchedIndex = -1;
-    for (let i = 0; i < bb.length; i += 1) {
-      if (used.has(i)) continue;
-      if (artistTokensLooseMatch(tokenA, bb[i])) {
-        matchedIndex = i;
-        break;
-      }
-    }
-    if (matchedIndex >= 0) {
-      used.add(matchedIndex);
-      common += 1;
-    }
-  }
-  return common / Math.max(1, Math.min(aa.length, bb.length));
 }
 
 function isProperTokenSubset(subset, superset) {
@@ -666,6 +630,7 @@ export function runMergeDuplicateTracksMaintenance({
   const metadataByTrackKey = new Map(metadataRows.map((row) => [row.track_key, row]));
 
   const grouped = new Map();
+  const rowsByTrackKey = new Map();
   for (const row of trackRows) {
     const normalized = normalizeArtistTitle(row.artist, row.title);
     if (!normalized.artist || !normalized.title) continue;
@@ -684,6 +649,7 @@ export function runMergeDuplicateTracksMaintenance({
       artistSet: artistSet(normalized.artist),
       canonicalId
     };
+    rowsByTrackKey.set(row.track_key, enriched);
     const groupKey = canonicalMapKey(titleMatch, primary);
     if (!grouped.has(groupKey)) grouped.set(groupKey, []);
     grouped.get(groupKey).push(enriched);
@@ -691,6 +657,58 @@ export function runMergeDuplicateTracksMaintenance({
 
   const candidates = [];
   let groupsScanned = 0;
+  const canonicalGroups = new Map();
+  for (const row of rowsByTrackKey.values()) {
+    if (!row.canonicalId) continue;
+    if (!canonicalGroups.has(row.canonicalId)) canonicalGroups.set(row.canonicalId, []);
+    canonicalGroups.get(row.canonicalId).push(row);
+  }
+
+  for (const rows of canonicalGroups.values()) {
+    if (rows.length < 2) continue;
+    const winner = [...rows].sort((a, b) => {
+      if (a.plays !== b.plays) return b.plays - a.plays;
+      const aLen = String(a.artist || '').length;
+      const bLen = String(b.artist || '').length;
+      if (aLen !== bLen) return bLen - aLen;
+      return String(a.track_key).localeCompare(String(b.track_key));
+    })[0];
+    if (!winner) continue;
+    const winnerCanonical = normalizeArtistTitle(winner.artist, winner.title);
+    if (!winnerCanonical.artist || !winnerCanonical.title) continue;
+    const canonicalTitle = normalizeTitleForMatch(winnerCanonical.title);
+    const canonicalPrimaryArtist = primaryArtist(winnerCanonical.artist);
+    if (!canonicalTitle || !canonicalPrimaryArtist) continue;
+
+    if (winner.track_key !== winnerCanonical.trackKey) {
+      candidates.push({
+        oldKey: winner.track_key,
+        newKey: winnerCanonical.trackKey,
+        artist: winnerCanonical.artist,
+        title: winnerCanonical.title,
+        plays: winner.plays,
+        score: 90,
+        canonical_title: canonicalTitle,
+        canonical_primary_artist: canonicalPrimaryArtist
+      });
+    }
+
+    for (const loser of rows) {
+      if (loser.track_key === winner.track_key) continue;
+      if (loser.track_key === winnerCanonical.trackKey) continue;
+      candidates.push({
+        oldKey: loser.track_key,
+        newKey: winnerCanonical.trackKey,
+        artist: winnerCanonical.artist,
+        title: winnerCanonical.title,
+        plays: loser.plays,
+        score: 80,
+        canonical_title: canonicalTitle,
+        canonical_primary_artist: canonicalPrimaryArtist
+      });
+    }
+  }
+
   for (const [groupKey, rows] of grouped.entries()) {
     if (!rows.length) continue;
     groupsScanned += 1;
@@ -887,6 +905,139 @@ export function runMergeDuplicateTracksMaintenance({
 
 export function runTitleVariantMergeMaintenance(opts) {
   return runMergeDuplicateTracksMaintenance(opts);
+}
+
+export function runManualTrackMerge({
+  dbPath,
+  winnerTrackKey,
+  loserTrackKey,
+  logger
+}) {
+  const winnerKey = String(winnerTrackKey || '').trim();
+  const loserKey = String(loserTrackKey || '').trim();
+  if (!winnerKey || !loserKey) {
+    throw new Error('winnerTrackKey and loserTrackKey are required');
+  }
+  if (winnerKey === loserKey) {
+    throw new Error('winnerTrackKey and loserTrackKey must be different');
+  }
+
+  const db = openDb(dbPath);
+  const winnerRow = db.prepare(`
+    select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+    from plays
+    where track_key = ?
+    group by track_key
+  `).get(winnerKey);
+  const loserRow = db.prepare(`
+    select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+    from plays
+    where track_key = ?
+    group by track_key
+  `).get(loserKey);
+
+  if (!winnerRow) {
+    db.close();
+    throw new Error(`winnerTrackKey not found: ${winnerKey}`);
+  }
+  if (!loserRow) {
+    db.close();
+    throw new Error(`loserTrackKey not found: ${loserKey}`);
+  }
+
+  const winnerMeta = db.prepare('select * from track_metadata where track_key = ?').get(winnerKey) ?? null;
+  const loserMeta = db.prepare('select * from track_metadata where track_key = ?').get(loserKey) ?? null;
+  const winnerCanonical = normalizeArtistTitle(winnerRow.artist, winnerRow.title);
+  const finalArtist = winnerCanonical.artist || winnerRow.artist;
+  const finalTitle = winnerCanonical.title || winnerRow.title;
+  const canonicalTitle = normalizeTitleForMatch(finalTitle);
+  const canonicalPrimary = primaryArtist(finalArtist);
+
+  let playsUpdated = 0;
+  let dailyRowsRebuilt = 0;
+  let metadataUpdated = 0;
+  const nowIso = isoUtcNow();
+
+  const tx = db.transaction(() => {
+    playsUpdated = db.prepare(`
+      update plays
+      set track_key = ?, artist = ?, title = ?
+      where track_key = ?
+    `).run(winnerKey, finalArtist, finalTitle, loserKey).changes;
+
+    const dailyByStation = db.prepare(`
+      select date_berlin, station_id, sum(plays) as plays
+      from daily_track_stats
+      where track_key in (?, ?)
+      group by date_berlin, station_id
+    `).all(winnerKey, loserKey);
+    if (dailyByStation.length) {
+      db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(winnerKey, loserKey);
+      const insertDaily = db.prepare(`
+        insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+        values (?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of dailyByStation) {
+        insertDaily.run(row.date_berlin, row.station_id, winnerKey, finalArtist, finalTitle, Number(row.plays || 0));
+        dailyRowsRebuilt += 1;
+      }
+    }
+
+    const dailyOverall = db.prepare(`
+      select date_berlin, sum(plays) as plays
+      from daily_overall_track_stats
+      where track_key in (?, ?)
+      group by date_berlin
+    `).all(winnerKey, loserKey);
+    if (dailyOverall.length) {
+      db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(winnerKey, loserKey);
+      const insertOverall = db.prepare(`
+        insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+        values (?, ?, ?, ?, ?)
+      `);
+      for (const row of dailyOverall) {
+        insertOverall.run(row.date_berlin, winnerKey, finalArtist, finalTitle, Number(row.plays || 0));
+      }
+    }
+
+    db.prepare('delete from backpool_track_catalog where track_key = ?').run(loserKey);
+
+    const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+    if (chosenMeta) {
+      const mergedMeta = {
+        ...chosenMeta,
+        track_key: winnerKey,
+        artist: finalArtist,
+        title: finalTitle
+      };
+      upsertTrackMetadata(db, mergedMeta);
+      metadataUpdated = 1;
+    }
+    if (loserMeta) {
+      db.prepare('delete from track_metadata where track_key = ?').run(loserKey);
+    }
+
+    if (canonicalTitle && canonicalPrimary) {
+      upsertCanonicalMap(db, {
+        canonical_title: canonicalTitle,
+        canonical_primary_artist: canonicalPrimary,
+        canonical_track_key: winnerKey,
+        updated_at_utc: nowIso
+      });
+    }
+  });
+  tx();
+  db.close();
+
+  const result = {
+    winnerTrackKey: winnerKey,
+    loserTrackKey: loserKey,
+    playsUpdated,
+    dailyRowsRebuilt,
+    metadataUpdated
+  };
+  logger?.info(result, 'manual track merge completed');
+  return result;
 }
 
 export function runCanonicalArtistMaintenance({ dbPath, dryRun = false, maxPairs = 5000, logger }) {

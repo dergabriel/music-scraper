@@ -155,6 +155,10 @@ describe('api handlers', () => {
     expect(routePaths).toContain('/new-titles');
     expect(routePaths).toContain('/api/tracks');
     expect(routePaths).toContain('/api/new-titles');
+    expect(routePaths).toContain('/api/tracks/:trackKey/trend');
+    expect(routePaths).toContain('/api/tracks/:trackKey/lifecycle');
+    expect(routePaths).toContain('/api/tracks/:trackKey/station-divergence');
+    expect(routePaths).toContain('/api/admin/merge-tracks');
 
     const healthRes = mkRes();
     h.health({}, healthRes);
@@ -247,6 +251,43 @@ describe('api handlers', () => {
     expect(stationsBreakdownRes.body.stations.length).toBe(1);
     expect(stationsBreakdownRes.body.stations[0].plays).toBe(2);
 
+    const trendRes = mkRes();
+    h.trackTrend({ params: { trackKey } }, trendRes);
+    expect(trendRes.statusCode).toBe(200);
+    expect(typeof trendRes.body.growth_percent).toBe('number');
+    expect(['hot', 'stable', 'dropping']).toContain(trendRes.body.status);
+
+    const lifecycleRes = mkRes();
+    h.trackLifecycle({ params: { trackKey } }, lifecycleRes);
+    expect(lifecycleRes.statusCode).toBe(200);
+    expect(['new', 'active', 'catalog', 'declining']).toContain(lifecycleRes.body.status);
+
+    const divergenceRes = mkRes();
+    h.trackStationDivergence({ params: { trackKey } }, divergenceRes);
+    expect(divergenceRes.statusCode).toBe(200);
+    expect(Array.isArray(divergenceRes.body.rows)).toBe(true);
+
+    const alertsRes = mkRes();
+    h.alertsNewCrossStation({ query: { days: '2', minStations: '2' } }, alertsRes);
+    expect(alertsRes.statusCode).toBe(200);
+    expect(Array.isArray(alertsRes.body.rows)).toBe(true);
+
+    const momentumRes = mkRes();
+    h.artistsMomentum({ query: { limit: '10' } }, momentumRes);
+    expect(momentumRes.statusCode).toBe(200);
+    expect(Array.isArray(momentumRes.body.rows)).toBe(true);
+
+    const outliersRes = mkRes();
+    h.outliers({ query: { days: '30', threshold: '2.5', limit: '20' } }, outliersRes);
+    expect(outliersRes.statusCode).toBe(200);
+    expect(Array.isArray(outliersRes.body.rows)).toBe(true);
+
+    const stationProfileRes = mkRes();
+    h.stationProfile({ params: { stationId: 'planet_radio' }, query: { days: '90' } }, stationProfileRes);
+    expect(stationProfileRes.statusCode).toBe(200);
+    expect(stationProfileRes.body.station_id).toBe('planet_radio');
+    expect(Array.isArray(stationProfileRes.body.genre_distribution)).toBe(true);
+
     const metaRes = mkRes();
     h.trackMeta({ params: { trackKey } }, metaRes);
     expect(metaRes.statusCode).toBe(200);
@@ -275,6 +316,29 @@ describe('api handlers', () => {
     expect(Array.isArray(backpoolRes.body.rows)).toBe(true);
     expect(backpoolRes.body.rows.length).toBe(1);
     expect(backpoolRes.body.rows[0].stationId).toBe('planet_radio');
+
+    const mergeRes = mkRes();
+    h.adminMergeTracks(
+      {
+        body: {
+          winnerTrackKey: oldKey,
+          loserTrackKey: freshKey
+        }
+      },
+      mergeRes
+    );
+    expect(mergeRes.statusCode).toBe(200);
+    expect(mergeRes.body.ok).toBe(true);
+    const mergeCheckDb = openDb(dbPath);
+    const mergedCounts = mergeCheckDb.prepare(`
+      select track_key, count(*) as c
+      from plays
+      group by track_key
+      order by c desc
+    `).all();
+    mergeCheckDb.close();
+    expect(mergedCounts.length).toBe(1);
+    expect(mergedCounts[0].track_key).toBe(oldKey);
 
     const evalRes = mkRes();
     await h.evaluateDaily({ body: { date: '2026-02-23' } }, evalRes);

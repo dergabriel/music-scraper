@@ -20,7 +20,7 @@ import {
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackSeriesByStation, buildTrackTotals } from './trends.js';
-import { runDailyEvaluation, runBackpoolAnalysis } from './services.js';
+import { runDailyEvaluation, runBackpoolAnalysis, runManualTrackMerge } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
 import { TrackVerifier } from './trackVerifier.js';
@@ -58,6 +58,62 @@ export function parseRange(from, to) {
   };
 }
 
+function parseNumberInRange(rawValue, fallback, min, max) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(parsed, max));
+}
+
+function classifyGrowth(growthPercent) {
+  if (growthPercent > 30) return 'hot';
+  if (growthPercent < -30) return 'dropping';
+  return 'stable';
+}
+
+function computeTrackTrend(db, trackKey, nowBerlin = DateTime.now().setZone(BERLIN_TZ)) {
+  const nowUtcIso = nowBerlin.toUTC().toISO();
+  const last48Start = nowBerlin.minus({ hours: 48 }).toUTC().toISO();
+  const prev48Start = nowBerlin.minus({ hours: 96 }).toUTC().toISO();
+  const prev48End = nowBerlin.minus({ hours: 48 }).toUTC().toISO();
+  const last14Start = nowBerlin.minus({ days: 14 }).toUTC().toISO();
+
+  const playsLast48h = db.prepare(`
+    select count(*) as c
+    from plays
+    where track_key = ?
+      and played_at_utc >= ?
+      and played_at_utc < ?
+  `).get(trackKey, last48Start, nowUtcIso)?.c ?? 0;
+  const playsPrev48h = db.prepare(`
+    select count(*) as c
+    from plays
+    where track_key = ?
+      and played_at_utc >= ?
+      and played_at_utc < ?
+  `).get(trackKey, prev48Start, prev48End)?.c ?? 0;
+  const playsLast14d = db.prepare(`
+    select count(*) as c
+    from plays
+    where track_key = ?
+      and played_at_utc >= ?
+      and played_at_utc < ?
+  `).get(trackKey, last14Start, nowUtcIso)?.c ?? 0;
+
+  const avgPlaysLast14d = playsLast14d / 14;
+  const currentDailyRate = playsLast48h / 2;
+  const growthPercent = avgPlaysLast14d > 0
+    ? ((currentDailyRate - avgPlaysLast14d) / avgPlaysLast14d) * 100
+    : (currentDailyRate > 0 ? 100 : 0);
+
+  return {
+    plays_last_48h: Number(playsLast48h),
+    avg_plays_last_14d: Number(avgPlaysLast14d.toFixed(3)),
+    growth_percent: Number(growthPercent.toFixed(2)),
+    previous_48h: Number(playsPrev48h),
+    status: classifyGrowth(growthPercent)
+  };
+}
+
 export function createApiHandlers({ configPath, dbPath, logger }) {
   const backpoolInFlight = new Map();
   const backpoolCache = new Map();
@@ -87,8 +143,16 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/tracks/:trackKey/series-by-station?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=10',
           'GET /api/tracks/:trackKey/totals?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/stations?from=YYYY-MM-DD&to=YYYY-MM-DD',
+          'GET /api/tracks/:trackKey/trend',
+          'GET /api/tracks/:trackKey/station-divergence',
+          'GET /api/tracks/:trackKey/lifecycle',
           'GET /api/tracks/:trackKey/meta',
           'POST /api/tracks/:trackKey/meta/refresh',
+          'GET /api/alerts/new-cross-station?days=2&minStations=3',
+          'GET /api/artists/momentum?limit=50',
+          'GET /api/outliers?days=30&threshold=2.5&limit=100',
+          'GET /api/stations/:stationId/profile?days=90',
+          'POST /api/admin/merge-tracks {"winnerTrackKey":"...","loserTrackKey":"..."}',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&releaseYear=YYYY&maxReleaseAgeDays=730',
           'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationMinReleaseAgeDays=1095&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
@@ -302,6 +366,440 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         } finally {
           db.close();
         }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    trackTrend: (req, res) => {
+      try {
+        const trackKey = req.params.trackKey;
+        const db = openDb(dbPath);
+        try {
+          const identity = getTrackIdentity(db, trackKey);
+          if (!identity?.artist || !identity?.title) {
+            return res.status(404).json({ error: 'Unknown trackKey' });
+          }
+          const trend = computeTrackTrend(db, trackKey);
+          return res.json({ trackKey, identity, ...trend });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    trackStationDivergence: (req, res) => {
+      try {
+        const trackKey = req.params.trackKey;
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const startUtcIso = nowBerlin.minus({ days: 7 }).toUTC().toISO();
+        const endUtcIso = nowBerlin.toUTC().toISO();
+
+        const db = openDb(dbPath);
+        try {
+          const identity = getTrackIdentity(db, trackKey);
+          if (!identity?.artist || !identity?.title) {
+            return res.status(404).json({ error: 'Unknown trackKey' });
+          }
+
+          const trackByStation = db.prepare(`
+            select station_id, count(*) as plays
+            from plays
+            where track_key = ?
+              and played_at_utc >= ?
+              and played_at_utc < ?
+            group by station_id
+          `).all(trackKey, startUtcIso, endUtcIso);
+          const totalsByStation = db.prepare(`
+            select station_id, count(*) as total_plays
+            from plays
+            where played_at_utc >= ?
+              and played_at_utc < ?
+            group by station_id
+          `).all(startUtcIso, endUtcIso);
+          const stations = listStations(db);
+          const stationNameById = new Map(stations.map((row) => [row.id, row.name || row.id]));
+
+          const totalTrackPlays = trackByStation.reduce((sum, row) => sum + Number(row.plays || 0), 0);
+          const totalStationPlays = totalsByStation.reduce((sum, row) => sum + Number(row.total_plays || 0), 0);
+          const overallShare = totalStationPlays > 0 ? totalTrackPlays / totalStationPlays : 0;
+          const totalByStationMap = new Map(totalsByStation.map((row) => [row.station_id, Number(row.total_plays || 0)]));
+
+          const rows = trackByStation.map((row) => {
+            const stationTotal = Number(totalByStationMap.get(row.station_id) || 0);
+            const stationShare = stationTotal > 0 ? Number(row.plays || 0) / stationTotal : 0;
+            const deviationPercent = overallShare > 0
+              ? ((stationShare - overallShare) / overallShare) * 100
+              : 0;
+            return {
+              station_id: row.station_id,
+              station_name: stationNameById.get(row.station_id) || row.station_id,
+              track_plays: Number(row.plays || 0),
+              station_total_plays: stationTotal,
+              station_share: Number((stationShare * 100).toFixed(3)),
+              deviation_percent: Number(deviationPercent.toFixed(2))
+            };
+          }).sort((a, b) => Math.abs(b.deviation_percent) - Math.abs(a.deviation_percent));
+
+          return res.json({
+            trackKey,
+            identity,
+            window_days: 7,
+            overall_share_percent: Number((overallShare * 100).toFixed(3)),
+            rows
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    alertsNewCrossStation: (req, res) => {
+      try {
+        const days = Math.floor(parseNumberInRange(safeQueryValue(req.query.days), 2, 1, 30));
+        const minStations = Math.floor(parseNumberInRange(safeQueryValue(req.query.minStations), 3, 2, 20));
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const startUtcIso = nowBerlin.minus({ days }).startOf('day').toUTC().toISO();
+        const endUtcIso = nowBerlin.toUTC().toISO();
+
+        const db = openDb(dbPath);
+        try {
+          const rows = db.prepare(`
+            select
+              p.track_key,
+              min(p.artist) as artist,
+              min(p.title) as title,
+              min(p.played_at_utc) as first_seen_utc,
+              max(p.played_at_utc) as last_seen_utc,
+              count(*) as plays,
+              count(distinct p.station_id) as station_count
+            from plays p
+            where p.played_at_utc >= ?
+              and p.played_at_utc < ?
+            group by p.track_key
+            having count(distinct p.station_id) >= ?
+            order by station_count desc, plays desc, first_seen_utc asc
+            limit 200
+          `).all(startUtcIso, endUtcIso, minStations);
+          return res.json({ days, minStations, rows });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    artistsMomentum: (req, res) => {
+      try {
+        const limit = Math.floor(parseNumberInRange(safeQueryValue(req.query.limit), 50, 5, 200));
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const start30 = nowBerlin.minus({ days: 30 }).toUTC().toISO();
+        const prev30 = nowBerlin.minus({ days: 60 }).toUTC().toISO();
+        const end = nowBerlin.toUTC().toISO();
+
+        const db = openDb(dbPath);
+        try {
+          const playsNow = db.prepare(`
+            select artist, count(*) as plays
+            from plays
+            where played_at_utc >= ?
+              and played_at_utc < ?
+            group by artist
+          `).all(start30, end);
+          const playsPrev = db.prepare(`
+            select artist, count(*) as plays
+            from plays
+            where played_at_utc >= ?
+              and played_at_utc < ?
+            group by artist
+          `).all(prev30, start30);
+          const newTracks = db.prepare(`
+            select artist, count(*) as new_tracks
+            from (
+              select min(artist) as artist, track_key, min(played_at_utc) as first_play
+              from plays
+              group by track_key
+              having first_play >= ? and first_play < ?
+            ) t
+            group by artist
+          `).all(start30, end);
+
+          const prevMap = new Map(playsPrev.map((row) => [row.artist, Number(row.plays || 0)]));
+          const newMap = new Map(newTracks.map((row) => [row.artist, Number(row.new_tracks || 0)]));
+          const artists = playsNow.map((row) => ({
+            artist: row.artist,
+            plays_now: Number(row.plays || 0),
+            plays_prev: Number(prevMap.get(row.artist) || 0),
+            new_tracks: Number(newMap.get(row.artist) || 0)
+          }));
+
+          const maxPlays = Math.max(1, ...artists.map((row) => row.plays_now));
+          const maxNewTracks = Math.max(1, ...artists.map((row) => row.new_tracks));
+          const rows = artists.map((row) => {
+            const growthRate = row.plays_prev > 0
+              ? ((row.plays_now - row.plays_prev) / row.plays_prev)
+              : (row.plays_now > 0 ? 1 : 0);
+            const normalizedGrowth = Math.max(0, Math.min(1, (growthRate + 1) / 2));
+            const score = (
+              (row.plays_now / maxPlays) * 0.5 +
+              (row.new_tracks / maxNewTracks) * 0.25 +
+              normalizedGrowth * 0.25
+            ) * 100;
+            return {
+              ...row,
+              growth_rate_percent: Number((growthRate * 100).toFixed(2)),
+              score: Number(score.toFixed(2))
+            };
+          })
+            .sort((a, b) => b.score - a.score || b.plays_now - a.plays_now)
+            .slice(0, limit);
+
+          return res.json({ window_days: 30, rows });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    trackLifecycle: (req, res) => {
+      try {
+        const trackKey = req.params.trackKey;
+        const db = openDb(dbPath);
+        try {
+          const identity = getTrackIdentity(db, trackKey);
+          if (!identity?.artist || !identity?.title) {
+            return res.status(404).json({ error: 'Unknown trackKey' });
+          }
+          const row = db.prepare(`
+            select
+              min(played_at_utc) as first_played_at_utc,
+              max(played_at_utc) as last_played_at_utc,
+              count(*) as total_plays
+            from plays
+            where track_key = ?
+          `).get(trackKey);
+          const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+          const first = DateTime.fromISO(String(row?.first_played_at_utc || ''), { zone: 'utc' });
+          const last = DateTime.fromISO(String(row?.last_played_at_utc || ''), { zone: 'utc' });
+          const ageDays = first.isValid ? Math.max(0, Math.floor(nowBerlin.diff(first.setZone(BERLIN_TZ), 'days').days)) : 0;
+          const daysSinceLastPlay = last.isValid ? Math.max(0, Math.floor(nowBerlin.diff(last.setZone(BERLIN_TZ), 'days').days)) : null;
+          const trend = computeTrackTrend(db, trackKey, nowBerlin);
+
+          let status = 'catalog';
+          if (ageDays < 14) status = 'new';
+          else if (ageDays < 60) status = 'active';
+          if (trend.growth_percent < -30) status = 'declining';
+
+          return res.json({
+            trackKey,
+            identity,
+            first_played_at_utc: row?.first_played_at_utc ?? null,
+            last_played_at_utc: row?.last_played_at_utc ?? null,
+            total_plays: Number(row?.total_plays || 0),
+            age_days: ageDays,
+            days_since_last_play: daysSinceLastPlay,
+            trend,
+            status
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    outliers: (req, res) => {
+      try {
+        const days = Math.floor(parseNumberInRange(safeQueryValue(req.query.days), 30, 7, 120));
+        const threshold = parseNumberInRange(safeQueryValue(req.query.threshold), 2.5, 1, 8);
+        const limit = Math.floor(parseNumberInRange(safeQueryValue(req.query.limit), 100, 10, 1000));
+        const startDate = DateTime.now().setZone(BERLIN_TZ).minus({ days }).toISODate();
+
+        const db = openDb(dbPath);
+        try {
+          const rows = db.prepare(`
+            select date_berlin, track_key, artist, title, plays
+            from daily_overall_track_stats
+            where date_berlin >= ?
+          `).all(startDate);
+          const byTrack = new Map();
+          for (const row of rows) {
+            if (!byTrack.has(row.track_key)) byTrack.set(row.track_key, []);
+            byTrack.get(row.track_key).push(row);
+          }
+
+          const outliers = [];
+          for (const [trackKey, series] of byTrack.entries()) {
+            if (series.length < 5) continue;
+            const values = series.map((row) => Number(row.plays || 0));
+            const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+            const variance = values.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / values.length;
+            const std = Math.sqrt(variance);
+            if (!Number.isFinite(std) || std <= 0) continue;
+            for (const row of series) {
+              const z = (Number(row.plays || 0) - mean) / std;
+              if (z > threshold) {
+                outliers.push({
+                  date_berlin: row.date_berlin,
+                  track_key: trackKey,
+                  artist: row.artist,
+                  title: row.title,
+                  plays: Number(row.plays || 0),
+                  z_score: Number(z.toFixed(3)),
+                  mean: Number(mean.toFixed(3)),
+                  std: Number(std.toFixed(3))
+                });
+              }
+            }
+          }
+
+          outliers.sort((a, b) => b.z_score - a.z_score);
+          return res.json({
+            days,
+            threshold,
+            rows: outliers.slice(0, limit)
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    stationProfile: (req, res) => {
+      try {
+        const stationId = req.params.stationId;
+        const days = Math.floor(parseNumberInRange(safeQueryValue(req.query.days), 90, 30, 365));
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const startUtcIso = nowBerlin.minus({ days }).toUTC().toISO();
+        const endUtcIso = nowBerlin.toUTC().toISO();
+        const newCutoffUtc = nowBerlin.minus({ days: 30 }).toUTC().toISO();
+
+        const db = openDb(dbPath);
+        try {
+          const station = listStations(db).find((row) => row.id === stationId);
+          if (!station) return res.status(404).json({ error: 'Unknown stationId' });
+
+          const totalPlays = db.prepare(`
+            select count(*) as c
+            from plays
+            where station_id = ?
+              and played_at_utc >= ?
+              and played_at_utc < ?
+          `).get(stationId, startUtcIso, endUtcIso)?.c ?? 0;
+
+          const trackRows = db.prepare(`
+            select
+              track_key,
+              min(played_at_utc) as first_played_at_utc,
+              max(played_at_utc) as last_played_at_utc,
+              count(*) as plays
+            from plays
+            where station_id = ?
+              and played_at_utc >= ?
+              and played_at_utc < ?
+            group by track_key
+          `).all(stationId, startUtcIso, endUtcIso);
+
+          const spans = trackRows.map((row) => {
+            const first = DateTime.fromISO(row.first_played_at_utc, { zone: 'utc' });
+            const last = DateTime.fromISO(row.last_played_at_utc, { zone: 'utc' });
+            if (!first.isValid || !last.isValid) return 0;
+            return Math.max(0, last.diff(first, 'days').days);
+          });
+          const avgRotationLifespanDays = spans.length
+            ? spans.reduce((sum, value) => sum + value, 0) / spans.length
+            : 0;
+
+          const newTracksCount = db.prepare(`
+            select count(*) as c
+            from (
+              select track_key, min(played_at_utc) as first_station_play
+              from plays
+              where station_id = ?
+              group by track_key
+              having first_station_play >= ?
+            )
+          `).get(stationId, newCutoffUtc)?.c ?? 0;
+          const totalTracks = trackRows.length;
+          const percentNewTracks = totalTracks > 0 ? (newTracksCount / totalTracks) * 100 : 0;
+
+          const backpoolTrackKeys = db.prepare(`
+            select distinct track_key
+            from backpool_track_catalog
+            where station_id = ?
+          `).all(stationId).map((row) => row.track_key);
+          let backpoolPlays = 0;
+          if (backpoolTrackKeys.length) {
+            const placeholders = backpoolTrackKeys.map(() => '?').join(', ');
+            backpoolPlays = db.prepare(`
+              select count(*) as c
+              from plays
+              where station_id = ?
+                and played_at_utc >= ?
+                and played_at_utc < ?
+                and track_key in (${placeholders})
+            `).get(stationId, startUtcIso, endUtcIso, ...backpoolTrackKeys)?.c ?? 0;
+          }
+          const percentBackpool = totalPlays > 0 ? (backpoolPlays / totalPlays) * 100 : 0;
+
+          const genreRows = db.prepare(`
+            select coalesce(m.genre, 'Unbekannt') as genre, count(*) as plays
+            from plays p
+            left join track_metadata m on m.track_key = p.track_key
+            where p.station_id = ?
+              and p.played_at_utc >= ?
+              and p.played_at_utc < ?
+            group by coalesce(m.genre, 'Unbekannt')
+            order by plays desc
+            limit 12
+          `).all(stationId, startUtcIso, endUtcIso);
+          const genreTotal = genreRows.reduce((sum, row) => sum + Number(row.plays || 0), 0);
+          const genres = genreRows.map((row) => ({
+            genre: row.genre,
+            plays: Number(row.plays || 0),
+            share_percent: genreTotal > 0 ? Number(((Number(row.plays || 0) / genreTotal) * 100).toFixed(2)) : 0
+          }));
+
+          return res.json({
+            station_id: stationId,
+            station_name: station.name || stationId,
+            window_days: days,
+            total_plays: Number(totalPlays),
+            total_tracks: Number(totalTracks),
+            average_rotation_lifespan_days: Number(avgRotationLifespanDays.toFixed(2)),
+            percent_new_tracks: Number(percentNewTracks.toFixed(2)),
+            percent_backpool: Number(percentBackpool.toFixed(2)),
+            genre_distribution: genres
+          });
+        } finally {
+          db.close();
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    adminMergeTracks: (req, res) => {
+      try {
+        const winnerTrackKey = String(req.body?.winnerTrackKey || '').trim();
+        const loserTrackKey = String(req.body?.loserTrackKey || '').trim();
+        const result = runManualTrackMerge({
+          dbPath,
+          winnerTrackKey,
+          loserTrackKey,
+          logger
+        });
+        return res.json({ ok: true, ...result });
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -661,8 +1159,16 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/tracks/:trackKey/series-by-station', handlers.trackSeriesByStation);
   app.get('/api/tracks/:trackKey/totals', handlers.trackTotals);
   app.get('/api/tracks/:trackKey/stations', handlers.trackStations);
+  app.get('/api/tracks/:trackKey/trend', handlers.trackTrend);
+  app.get('/api/tracks/:trackKey/station-divergence', handlers.trackStationDivergence);
+  app.get('/api/tracks/:trackKey/lifecycle', handlers.trackLifecycle);
   app.get('/api/tracks/:trackKey/meta', handlers.trackMeta);
   app.post('/api/tracks/:trackKey/meta/refresh', handlers.refreshTrackMeta);
+  app.get('/api/alerts/new-cross-station', handlers.alertsNewCrossStation);
+  app.get('/api/artists/momentum', handlers.artistsMomentum);
+  app.get('/api/outliers', handlers.outliers);
+  app.get('/api/stations/:stationId/profile', handlers.stationProfile);
+  app.post('/api/admin/merge-tracks', handlers.adminMergeTracks);
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
   app.get('/api/insights/backpool', handlers.backpool);

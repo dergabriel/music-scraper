@@ -267,6 +267,32 @@ async function loadStationReport() {
   renderReportContent(report);
 }
 
+async function mergeTracksManually() {
+  const winnerTrackKey = qs('winnerTrackKeyInput')?.value?.trim() || '';
+  const loserTrackKey = qs('loserTrackKeyInput')?.value?.trim() || '';
+  const state = qs('mergeState');
+  if (!winnerTrackKey || !loserTrackKey) {
+    if (state) state.textContent = 'Bitte beide Track Keys ausfüllen.';
+    return;
+  }
+  if (winnerTrackKey === loserTrackKey) {
+    if (state) state.textContent = 'Winner und Loser dürfen nicht identisch sein.';
+    return;
+  }
+
+  if (state) state.textContent = 'Merge läuft...';
+  const result = await apiFetch('/api/admin/merge-tracks', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ winnerTrackKey, loserTrackKey })
+  });
+  if (state) {
+    state.textContent =
+      `Merge erfolgreich: ${fmtNumber(result.playsUpdated)} Plays verschoben, ${fmtNumber(result.dailyRowsRebuilt)} Daily-Zeilen neu aufgebaut.`;
+  }
+  await loadTracks();
+}
+
 function debounce(fn, delay = 250) {
   let timer = null;
   return (...args) => {
@@ -316,6 +342,10 @@ async function init() {
   }));
   qs('reportStationSelect').addEventListener('change', () => runSafe(loadStationReport, (msg) => {
     qs('reportState').textContent = `Fehler beim Laden des Berichts: ${msg}`;
+  }));
+  qs('mergeTracksBtn')?.addEventListener('click', () => runSafe(mergeTracksManually, (msg) => {
+    const mergeState = qs('mergeState');
+    if (mergeState) mergeState.textContent = `Merge fehlgeschlagen: ${msg}`;
   }));
 }
 

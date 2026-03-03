@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { isLikelyJingleLike, isLikelyNoiseTrack, normalizeArtistTitle } from '../src/normalize.js';
+import {
+  isLikelyJingleLike,
+  isLikelyNoiseTrack,
+  normalizeArtistTitle,
+  getArtistParts,
+  primaryArtist,
+  artistSet,
+  artistOverlapRatioLoose
+} from '../src/normalize.js';
 
 describe('normalizeArtistTitle', () => {
   it('normalizes case and whitespace', () => {
@@ -202,5 +210,12 @@ describe('normalizeArtistTitle', () => {
         stationId: 'fritz_rbb'
       })
     ).toBe(true);
+  });
+
+  it('exposes stable artist helper functions', () => {
+    expect(getArtistParts('milleniumkid x jbs')).toEqual(['jbs', 'milleniumkid']);
+    expect(primaryArtist('disco lines & tinashe')).toBe('disco lines');
+    expect(Array.from(artistSet('jbs; milleniumkid')).sort()).toEqual(['jbs', 'milleniumkid']);
+    expect(artistOverlapRatioLoose('huntr', 'huntrix')).toBeGreaterThanOrEqual(1);
   });
 });

@@ -29,6 +29,10 @@ function ensureTrackMetadataColumns(db) {
     duration_ms: 'integer',
     preview_url: 'text',
     isrc: 'text',
+    spotify_track_id: 'text',
+    spotify_confidence: 'real',
+    canonical_source: 'text',
+    canonical_id: 'text',
     chart_country: 'text'
   };
 
@@ -266,6 +270,10 @@ export function getTrackMetadata(db, trackKey) {
       duration_ms,
       preview_url,
       isrc,
+      spotify_track_id,
+      spotify_confidence,
+      canonical_source,
+      canonical_id,
       popularity_score,
       chart_airplay_rank,
       chart_single_rank,
@@ -279,6 +287,13 @@ export function getTrackMetadata(db, trackKey) {
 }
 
 export function upsertTrackMetadata(db, row) {
+  const payload = {
+    ...row,
+    spotify_track_id: row?.spotify_track_id ?? null,
+    spotify_confidence: Number.isFinite(Number(row?.spotify_confidence)) ? Number(row.spotify_confidence) : null,
+    canonical_source: row?.canonical_source ?? null,
+    canonical_id: row?.canonical_id ?? null
+  };
   db.prepare(`
     insert into track_metadata(
       track_key,
@@ -297,6 +312,10 @@ export function upsertTrackMetadata(db, row) {
       duration_ms,
       preview_url,
       isrc,
+      spotify_track_id,
+      spotify_confidence,
+      canonical_source,
+      canonical_id,
       popularity_score,
       chart_airplay_rank,
       chart_single_rank,
@@ -321,6 +340,10 @@ export function upsertTrackMetadata(db, row) {
       @duration_ms,
       @preview_url,
       @isrc,
+      @spotify_track_id,
+      @spotify_confidence,
+      @canonical_source,
+      @canonical_id,
       @popularity_score,
       @chart_airplay_rank,
       @chart_single_rank,
@@ -345,6 +368,10 @@ export function upsertTrackMetadata(db, row) {
       duration_ms = excluded.duration_ms,
       preview_url = excluded.preview_url,
       isrc = excluded.isrc,
+      spotify_track_id = excluded.spotify_track_id,
+      spotify_confidence = excluded.spotify_confidence,
+      canonical_source = excluded.canonical_source,
+      canonical_id = excluded.canonical_id,
       popularity_score = excluded.popularity_score,
       chart_airplay_rank = excluded.chart_airplay_rank,
       chart_single_rank = excluded.chart_single_rank,
@@ -352,7 +379,7 @@ export function upsertTrackMetadata(db, row) {
       social_viral_score = excluded.social_viral_score,
       payload_json = excluded.payload_json,
       last_checked_utc = excluded.last_checked_utc
-  `).run(row);
+  `).run(payload);
 }
 
 export function upsertCanonicalMap(db, row) {

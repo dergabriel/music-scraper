@@ -69,6 +69,10 @@ create table if not exists track_metadata(
   duration_ms integer,
   preview_url text,
   isrc text,
+  spotify_track_id text,
+  spotify_confidence real,
+  canonical_source text,
+  canonical_id text,
   popularity_score real,
   chart_airplay_rank integer,
   chart_single_rank integer,
@@ -77,6 +81,8 @@ create table if not exists track_metadata(
   payload_json text,
   last_checked_utc text not null
 );
+
+create index if not exists idx_track_metadata_isrc on track_metadata(isrc);
 
 create table if not exists backpool_station_summary(
   station_id text primary key,

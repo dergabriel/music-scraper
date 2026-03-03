@@ -2,6 +2,13 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")"
 
+if [ -f ".env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env"
+  set +a
+fi
+
 if [[ -t 1 ]]; then
   BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
   GREEN='\033[32m'; RED='\033[31m'; BLUE='\033[34m'; YELLOW='\033[33m'
