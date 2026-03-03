@@ -355,6 +355,36 @@ export function upsertTrackMetadata(db, row) {
   `).run(row);
 }
 
+export function upsertCanonicalMap(db, row) {
+  db.prepare(`
+    insert into canonical_map(
+      canonical_title,
+      canonical_primary_artist,
+      canonical_track_key,
+      updated_at_utc
+    ) values (
+      @canonical_title,
+      @canonical_primary_artist,
+      @canonical_track_key,
+      @updated_at_utc
+    )
+    on conflict(canonical_title, canonical_primary_artist) do update set
+      canonical_track_key = excluded.canonical_track_key,
+      updated_at_utc = excluded.updated_at_utc
+  `).run(row);
+}
+
+export function listCanonicalMap(db) {
+  return db.prepare(`
+    select
+      canonical_title,
+      canonical_primary_artist,
+      canonical_track_key,
+      updated_at_utc
+    from canonical_map
+  `).all();
+}
+
 export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
   const numericLimit = Number(limit);
   const parsedLimit = Number.isFinite(numericLimit) && numericLimit > 0

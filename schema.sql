@@ -137,3 +137,14 @@ create table if not exists backpool_track_catalog(
 
 create index if not exists idx_backpool_track_class on backpool_track_catalog(classification);
 create index if not exists idx_backpool_track_station_class on backpool_track_catalog(station_id, classification);
+
+create table if not exists canonical_map(
+  canonical_title text not null,
+  canonical_primary_artist text not null,
+  canonical_track_key text not null,
+  updated_at_utc text not null,
+  primary key(canonical_title, canonical_primary_artist)
+);
+
+create index if not exists idx_canonical_map_title_primary
+  on canonical_map(canonical_title, canonical_primary_artist);

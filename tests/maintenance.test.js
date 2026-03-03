@@ -10,6 +10,7 @@ import {
   runNoisePlayCleanup,
   runPromoMarkerMaintenance,
   runCanonicalArtistMaintenance,
+  runMergeDuplicateTracksMaintenance,
   runTitleVariantMergeMaintenance
 } from '../src/services.js';
 
@@ -646,6 +647,332 @@ describe('database maintenance', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].track_key).toBe(canonical.trackKey);
     expect(rows[0].title).toBe('kernkraft 400');
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merges punctuation-only title variants like where is my husband!', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-title-variant-punctuation-'));
+    const dbPath = path.join(tmp, 'punct.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: '1live',
+      name: '1Live',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('raye', 'where is my husband');
+    const legacyKey = crypto
+      .createHash('sha1')
+      .update('raye||where is my husband!', 'utf8')
+      .digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      '1live',
+      '2026-03-01T08:00:00.000Z',
+      'RAYE',
+      'Where Is My Husband',
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-01T09:00:00.000Z',
+      '1live',
+      '2026-03-01T10:00:00.000Z',
+      'RAYE',
+      'Where Is My Husband!',
+      'raye',
+      'where is my husband!',
+      legacyKey,
+      'https://example.test',
+      '2026-03-01T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runTitleVariantMergeMaintenance({ dbPath, dryRun: false, minOverlap: 0.6 });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+      from plays
+      where artist = 'raye'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonical.trackKey);
+    expect(rows[0].title).toBe('where is my husband');
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merge duplicate maintenance merges disco lines subset artist variants', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-merge-dup-subset-'));
+    const dbPath = path.join(tmp, 'subset.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'planet_radio',
+      name: 'Planet Radio',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('disco lines & tinashe', 'no broke boys');
+    const legacyKey = crypto.createHash('sha1').update('disco lines||no broke boys', 'utf8').digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'planet_radio',
+      '2026-03-02T08:00:00.000Z',
+      'Disco Lines & Tinashe',
+      'No Broke Boys',
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-02T09:00:00.000Z',
+      'planet_radio',
+      '2026-03-02T10:00:00.000Z',
+      'Disco Lines',
+      'No Broke Boys',
+      'disco lines',
+      'no broke boys',
+      legacyKey,
+      'https://example.test',
+      '2026-03-02T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runMergeDuplicateTracksMaintenance({ dbPath, dryRun: false });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, count(*) as plays
+      from plays
+      where title = 'no broke boys'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonical.trackKey);
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("merge duplicate maintenance merges love story + taylor's version legacy key", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-merge-dup-love-story-'));
+    const dbPath = path.join(tmp, 'love-story.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'swr3',
+      name: 'SWR3',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('taylor swift', 'love story');
+    const legacyKey = crypto
+      .createHash('sha1')
+      .update("taylor swift||love story (taylor's version)", 'utf8')
+      .digest('hex');
+
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'swr3',
+      '2026-03-02T08:00:00.000Z',
+      'Taylor Swift',
+      'Love Story',
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-02T09:00:00.000Z',
+      'swr3',
+      '2026-03-02T10:00:00.000Z',
+      'Taylor Swift',
+      "Love Story (Taylor's Version)",
+      'taylor swift',
+      "love story (taylor's version)",
+      legacyKey,
+      'https://example.test',
+      '2026-03-02T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runMergeDuplicateTracksMaintenance({ dbPath, dryRun: false });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(title) as title, count(*) as plays
+      from plays
+      where artist = 'taylor swift'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonical.trackKey);
+    expect(rows[0].title).toBe('love story');
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merge duplicate maintenance does not merge adele hello with lionel richie hello', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-merge-dup-no-false-positive-'));
+    const dbPath = path.join(tmp, 'hello.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'radio_hamburg',
+      name: 'Radio Hamburg',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    addPlay(db, {
+      stationId: 'radio_hamburg',
+      playedAtUtcIso: '2026-03-02T08:00:00.000Z',
+      artistRaw: 'Adele',
+      titleRaw: 'Hello'
+    });
+    addPlay(db, {
+      stationId: 'radio_hamburg',
+      playedAtUtcIso: '2026-03-02T10:00:00.000Z',
+      artistRaw: 'Lionel Richie',
+      titleRaw: 'Hello'
+    });
+    db.close();
+
+    const result = runMergeDuplicateTracksMaintenance({ dbPath, dryRun: false });
+    expect(result.merged).toBe(0);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+      from plays
+      where title = 'hello'
+      group by track_key
+      order by artist asc
+    `).all();
+    check.close();
+    expect(rows.length).toBe(2);
+    expect(rows[0].artist).toBe('adele');
+    expect(rows[1].artist).toBe('lionel richie');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('merge duplicate maintenance merges when canonical_id matches', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-merge-dup-canonical-id-'));
+    const dbPath = path.join(tmp, 'canonical-id.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'energy_berlin',
+      name: 'Energy Berlin',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const a = normalizeArtistTitle('disco lines & tinashe', 'no broke boys');
+    const b = normalizeArtistTitle('disco lines & djsomeone', 'no broke boys');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'energy_berlin',
+      '2026-03-02T08:00:00.000Z',
+      'Disco Lines & Tinashe',
+      'No Broke Boys',
+      a.artist,
+      a.title,
+      a.trackKey,
+      'https://example.test',
+      '2026-03-02T09:00:00.000Z',
+      'energy_berlin',
+      '2026-03-02T10:00:00.000Z',
+      'Disco Lines & DJSomeone',
+      'No Broke Boys',
+      b.artist,
+      b.title,
+      b.trackKey,
+      'https://example.test',
+      '2026-03-02T11:00:00.000Z'
+    );
+
+    upsertTrackMetadata(db, {
+      track_key: a.trackKey,
+      artist: a.artist,
+      title: a.title,
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 0.8,
+      external_track_id: 'itunes:12345',
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: null,
+      genre: null,
+      album: null,
+      label: null,
+      duration_ms: null,
+      preview_url: null,
+      isrc: null,
+      popularity_score: null,
+      chart_airplay_rank: null,
+      chart_single_rank: null,
+      chart_country: null,
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-03-02T12:00:00.000Z'
+    });
+    upsertTrackMetadata(db, {
+      track_key: b.trackKey,
+      artist: b.artist,
+      title: b.title,
+      verified_exists: 1,
+      verification_source: 'test',
+      verification_confidence: 0.7,
+      external_track_id: 'itunes:12345',
+      external_url: null,
+      artwork_url: null,
+      release_date_utc: null,
+      genre: null,
+      album: null,
+      label: null,
+      duration_ms: null,
+      preview_url: null,
+      isrc: null,
+      popularity_score: null,
+      chart_airplay_rank: null,
+      chart_single_rank: null,
+      chart_country: null,
+      social_viral_score: null,
+      payload_json: '{}',
+      last_checked_utc: '2026-03-02T12:00:00.000Z'
+    });
+    db.close();
+
+    const result = runMergeDuplicateTracksMaintenance({ dbPath, dryRun: false });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, count(*) as plays
+      from plays
+      where title = 'no broke boys'
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
     expect(rows[0].plays).toBe(2);
     fs.rmSync(tmp, { recursive: true, force: true });
   });

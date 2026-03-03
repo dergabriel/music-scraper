@@ -46,6 +46,10 @@ const GERMAN_STOPWORDS = new Set([
 ]);
 const SHORT_SUBTITLE_BLOCK_PATTERN = /\s*[\[(]\s*([^\]\)]{1,64})\s*[\])]\s*$/u;
 const SHORT_SUBTITLE_DISALLOWED_PATTERN = /\b(radio|edit|remix|mix|version|remaster(?:ed)?|extended|live|acoustic)\b/i;
+const EXPLICIT_EDITION_PATTERN =
+  /^(?:taylor'?s?\s+version|taylor\s+version|tv|original\s+version|album\s+version)$/i;
+const GENERIC_EDITION_BLOCK_PATTERN = /\s*[\[(]\s*([^\]\)]{1,64})\s*[\])]\s*$/u;
+const GENERIC_EDITION_DISALLOWED_PATTERN = /\b(remix|edit|mix|extended|live|acoustic)\b/i;
 
 function clean(input) {
   return (input ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -111,8 +115,48 @@ function stripShortParentheticalSubtitle(input) {
   return source.replace(SHORT_SUBTITLE_BLOCK_PATTERN, '').trim();
 }
 
+function stripEditionParentheses(input) {
+  const source = String(input ?? '');
+  const match = source.match(GENERIC_EDITION_BLOCK_PATTERN);
+  if (!match) return source;
+
+  const contentRaw = String(match[1] ?? '').trim();
+  if (!contentRaw) return source;
+  const contentNormalized = normalizeUnicode(contentRaw)
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (EXPLICIT_EDITION_PATTERN.test(contentNormalized)) {
+    return source.replace(GENERIC_EDITION_BLOCK_PATTERN, '').trim();
+  }
+
+  if (contentRaw.length > 25) return source;
+  if (/\d/.test(contentRaw)) return source;
+  if (GENERIC_EDITION_DISALLOWED_PATTERN.test(contentNormalized)) return source;
+  if (!/^[\p{L}\s'’]+$/u.test(contentRaw)) return source;
+
+  const words = contentNormalized.split(' ').filter(Boolean);
+  if (!words.some((word) => word.length >= 4)) return source;
+
+  return source.replace(GENERIC_EDITION_BLOCK_PATTERN, '').trim();
+}
+
 function stripTrailingYearEditionTag(input) {
   return String(input ?? '').replace(/\s'2[0-9]\s*$/u, '').trim();
+}
+
+function stripTrailingTitlePunctuation(input) {
+  let out = String(input ?? '')
+    .replace(/^[\s!?:,;…]+/gu, '')
+    .replace(/[\s!?:,;…]+$/gu, '')
+    .trim();
+
+  if (out.endsWith('.')) {
+    const body = out.slice(0, -1);
+    if (!body.includes('.')) out = body;
+  }
+  return out.trim();
 }
 
 function canonicalizeArtistPart(input) {
@@ -290,7 +334,15 @@ export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', st
     stationName,
     stationId
   );
-  const titleBase = clean(stripTrailingYearEditionTag(stripShortParentheticalSubtitle(titlePrepared)));
+  const titleBase = clean(
+    stripTrailingTitlePunctuation(
+      stripTrailingYearEditionTag(
+        stripEditionParentheses(
+          stripShortParentheticalSubtitle(titlePrepared)
+        )
+      )
+    )
+  );
 
   const artist = canonicalizeArtist(artistBase);
   const title = titleBase.replace(/\s+/g, ' ').trim();

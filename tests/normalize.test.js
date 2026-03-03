@@ -49,6 +49,13 @@ describe('normalizeArtistTitle', () => {
     expect(a.trackKey).toBe(b.trackKey);
   });
 
+  it("strips explicit edition tags like taylor's version", () => {
+    const a = normalizeArtistTitle('taylor swift', "love story (taylor's version)");
+    const b = normalizeArtistTitle('taylor swift', 'love story');
+    expect(a.title).toBe('love story');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
   it('strips short color subtitle at end without breaking canonical title', () => {
     const a = normalizeArtistTitle('bebe rexha & david guetta', "i'm good (blue)");
     const b = normalizeArtistTitle('bebe rexha & david guetta', "i'm good");
@@ -66,6 +73,15 @@ describe('normalizeArtistTitle', () => {
   it("keeps classic year markers like summer '69 untouched", () => {
     const out = normalizeArtistTitle('bryan adams', "summer '69");
     expect(out.title).toBe("summer '69");
+  });
+
+  it('normalizes trailing punctuation variants to one track key', () => {
+    const a = normalizeArtistTitle('raye', 'where is my husband!');
+    const b = normalizeArtistTitle('raye', 'where is my husband');
+    const c = normalizeArtistTitle('raye', 'where is my husband?!');
+    expect(a.title).toBe('where is my husband');
+    expect(a.trackKey).toBe(b.trackKey);
+    expect(a.trackKey).toBe(c.trackKey);
   });
 
   it('builds stable hash for equal canonical forms', () => {
