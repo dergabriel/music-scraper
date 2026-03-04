@@ -14,6 +14,7 @@ create table if not exists plays(
   artist text not null,
   title text not null,
   track_key text not null,
+  dedup_song_key text,
   source_url text,
   ingested_at_utc text not null,
   unique(station_id, played_at_utc, artist_raw, title_raw),
@@ -22,6 +23,28 @@ create table if not exists plays(
 
 create index if not exists idx_plays_station_played_at on plays(station_id, played_at_utc);
 create index if not exists idx_plays_track_key on plays(track_key);
+create index if not exists idx_plays_station_songkey_playedat on plays(station_id, dedup_song_key, played_at_utc);
+
+create table if not exists play_dedup_events(
+  id integer primary key autoincrement,
+  station_id text not null,
+  played_at_utc text not null,
+  artist_raw text not null,
+  title_raw text not null,
+  artist text not null,
+  title text not null,
+  track_key text not null,
+  dedup_song_key text not null,
+  deduped integer not null default 1,
+  last_counted_at_utc text,
+  delta_seconds integer,
+  source_url text,
+  ingested_at_utc text not null,
+  foreign key(station_id) references stations(id)
+);
+
+create index if not exists idx_play_dedup_station_songkey_playedat
+  on play_dedup_events(station_id, dedup_song_key, played_at_utc);
 
 create table if not exists daily_station_stats(
   date_berlin text not null,

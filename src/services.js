@@ -15,6 +15,7 @@ import {
   openDb,
   upsertStation,
   insertPlayIgnore,
+  insertDedupEvent,
   getStationTrackCounts,
   getStationTrackCountsWithMetadata,
   getStationTotalPlays,
@@ -41,6 +42,11 @@ import { OnlineradioboxParser } from './parsers/onlineradiobox.js';
 import { DlfNovaParser } from './parsers/dlfNova.js';
 import { FluxFmParser } from './parsers/fluxfm.js';
 import { TrackVerifier } from './trackVerifier.js';
+import {
+  DEFAULT_DEDUP_COOLDOWN_SECONDS,
+  shouldDedupByCooldown,
+  songKeyFromMetadataOrFallback
+} from './dedup.js';
 
 export function parserForStation(station) {
   switch (station.parser) {
@@ -1537,6 +1543,8 @@ export async function runIngest({ configPath, dbPath, logger }) {
   const scrapeErrors = [];
   const verifyAllTracks = process.env.YRPA_VERIFY_ALL_TRACKS === '1';
   const verificationEnabled = process.env.YRPA_TRACK_VERIFY !== '0' && process.env.NODE_ENV !== 'test';
+  const dedupCooldownSeconds = Math.max(1, Number(process.env.YRPA_DEDUP_COOLDOWN_SECONDS) || DEFAULT_DEDUP_COOLDOWN_SECONDS);
+  const storeDedupedEvents = process.env.YRPA_STORE_DEDUPED_EVENTS === '1';
   const verifier = verificationEnabled ? new TrackVerifier({ db, logger }) : null;
   const canonicalLookup = new Map();
   for (const row of listCanonicalMap(db)) {
@@ -1665,6 +1673,7 @@ export async function runIngest({ configPath, dbPath, logger }) {
       let inserted = 0;
       let skippedNoise = 0;
       let skippedJingle = 0;
+      let dedupedCooldown = 0;
       const ingestedAt = isoUtcNow();
       const verifiedByTrackKey = new Map();
 
@@ -1719,14 +1728,62 @@ export async function runIngest({ configPath, dbPath, logger }) {
           }
         }
 
+        const metadataForDedup = db.prepare(`
+          select isrc, canonical_id
+          from track_metadata
+          where track_key = ?
+        `).get(canonicalTrackKey) ?? null;
+        const dedupSongKey = songKeyFromMetadataOrFallback({
+          metadata: metadataForDedup,
+          artist: canonicalArtist,
+          title: canonicalTitle
+        });
+        const eventPlayedAtUtc = play.playedAt.toISOString();
+        const dedupDecision = shouldDedupByCooldown({
+          db,
+          stationId: station.id,
+          songKey: dedupSongKey,
+          eventPlayedAtUtcIso: eventPlayedAtUtc,
+          cooldownSeconds: dedupCooldownSeconds
+        });
+        if (dedupDecision.deduped) {
+          dedupedCooldown += 1;
+          logger?.info?.({
+            sender_id: station.id,
+            song_key: dedupSongKey,
+            event_time: eventPlayedAtUtc,
+            last_counted_time: dedupDecision.lastCountedAtUtc,
+            delta_seconds: dedupDecision.deltaSeconds
+          }, 'play deduped by cooldown');
+          if (storeDedupedEvents) {
+            insertDedupEvent(db, {
+              station_id: station.id,
+              played_at_utc: eventPlayedAtUtc,
+              artist_raw: play.artistRaw,
+              title_raw: play.titleRaw,
+              artist: canonicalArtist,
+              title: canonicalTitle,
+              track_key: canonicalTrackKey,
+              dedup_song_key: dedupSongKey,
+              deduped: 1,
+              last_counted_at_utc: dedupDecision.lastCountedAtUtc,
+              delta_seconds: dedupDecision.deltaSeconds,
+              source_url: play.sourceUrl || usedUrl,
+              ingested_at_utc: ingestedAt
+            });
+          }
+          continue;
+        }
+
         inserted += insertPlayIgnore(db, {
           station_id: station.id,
-          played_at_utc: play.playedAt.toISOString(),
+          played_at_utc: eventPlayedAtUtc,
           artist_raw: play.artistRaw,
           title_raw: play.titleRaw,
           artist: canonicalArtist,
           title: canonicalTitle,
           track_key: canonicalTrackKey,
+          dedup_song_key: dedupSongKey,
           source_url: play.sourceUrl || usedUrl,
           ingested_at_utc: ingestedAt
         });
@@ -1751,6 +1808,7 @@ export async function runIngest({ configPath, dbPath, logger }) {
           playsInserted: inserted,
           skippedNoise,
           skippedJingle,
+          dedupedCooldown,
           dedupedByMinute,
           verificationEnabled,
           verifyAllTracks

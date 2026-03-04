@@ -41,6 +41,14 @@ function ensureTrackMetadataColumns(db) {
       db.exec(`alter table track_metadata add column ${name} ${type}`);
     }
   }
+
+  const playColumns = new Set(
+    db.prepare("select name from pragma_table_info('plays')").all().map((row) => row.name)
+  );
+  if (!playColumns.has('dedup_song_key')) {
+    db.exec('alter table plays add column dedup_song_key text');
+  }
+  db.exec('create index if not exists idx_plays_station_songkey_playedat on plays(station_id, dedup_song_key, played_at_utc)');
 }
 
 export function upsertStation(db, station) {
@@ -56,6 +64,12 @@ export function upsertStation(db, station) {
 }
 
 export function insertPlayIgnore(db, row) {
+  const params = {
+    ...row,
+    dedup_song_key: row?.dedup_song_key ?? null,
+    source_url: row?.source_url ?? null,
+    ingested_at_utc: row?.ingested_at_utc ?? null
+  };
   const stmt = db.prepare(`
     insert or ignore into plays(
       station_id,
@@ -65,6 +79,7 @@ export function insertPlayIgnore(db, row) {
       artist,
       title,
       track_key,
+      dedup_song_key,
       source_url,
       ingested_at_utc
     ) values (
@@ -75,6 +90,42 @@ export function insertPlayIgnore(db, row) {
       @artist,
       @title,
       @track_key,
+      @dedup_song_key,
+      @source_url,
+      @ingested_at_utc
+    )
+  `);
+  return stmt.run(params).changes;
+}
+
+export function insertDedupEvent(db, row) {
+  const stmt = db.prepare(`
+    insert into play_dedup_events(
+      station_id,
+      played_at_utc,
+      artist_raw,
+      title_raw,
+      artist,
+      title,
+      track_key,
+      dedup_song_key,
+      deduped,
+      last_counted_at_utc,
+      delta_seconds,
+      source_url,
+      ingested_at_utc
+    ) values (
+      @station_id,
+      @played_at_utc,
+      @artist_raw,
+      @title_raw,
+      @artist,
+      @title,
+      @track_key,
+      @dedup_song_key,
+      @deduped,
+      @last_counted_at_utc,
+      @delta_seconds,
       @source_url,
       @ingested_at_utc
     )
