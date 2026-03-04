@@ -265,3 +265,33 @@ stations:
     parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
+
+  - id: "bbc_radio_1"
+    name: "BBC Radio 1"
+    playlist_url: "https://onlineradiobox.com/uk/bbcradio1/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/London"
+
+  - id: "radio_538"
+    name: "Radio 538"
+    playlist_url: "https://onlineradiobox.com/nl/538/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Amsterdam"
+
+  - id: "radio_koeln"
+    name: "Radio Köln (Radio NRW)"
+    playlist_url: "https://onlineradiobox.com/de/radiokoeln/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/radio-koeln/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+
+  - id: "capital_fm"
+    name: "Capital FM"
+    playlist_url: "https://onlineradiobox.com/uk/capitalfm/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/London"
