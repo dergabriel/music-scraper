@@ -6,7 +6,8 @@ import {
   getArtistParts,
   primaryArtist,
   artistSet,
-  artistOverlapRatioLoose
+  artistOverlapRatioLoose,
+  canonicalTitleKey
 } from '../src/normalize.js';
 
 describe('normalizeArtistTitle', () => {
@@ -217,5 +218,7 @@ describe('normalizeArtistTitle', () => {
     expect(primaryArtist('disco lines & tinashe')).toBe('disco lines');
     expect(Array.from(artistSet('jbs; milleniumkid')).sort()).toEqual(['jbs', 'milleniumkid']);
     expect(artistOverlapRatioLoose('huntr', 'huntrix')).toBeGreaterThanOrEqual(1);
+    expect(canonicalTitleKey("don't stop")).toBe('dont stop');
+    expect(canonicalTitleKey("don’t stop")).toBe('dont stop');
   });
 });

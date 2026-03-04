@@ -61,6 +61,15 @@ function normalizeUnicode(input) {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+export function canonicalTitleKey(input) {
+  return normalizeUnicode(String(input ?? ''))
+    .toLowerCase()
+    .replace(/['`´’]/g, '')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normalizeTerm(input) {
   return clean(input)
     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')

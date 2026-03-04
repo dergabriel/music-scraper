@@ -311,8 +311,29 @@ export class TrackVerifier {
 
     try {
       const result = await verifyWithItunes(track);
-      upsertTrackMetadata(this.db, toDbRow(track, result, cached));
-      return { ...result, fromCache: false };
+      let spotifyMatch = null;
+      try {
+        spotifyMatch = await searchTrackOnSpotify(track.artist, track.title, {
+          durationMs: Number.isFinite(result.durationMs) ? Number(result.durationMs) : null
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger?.debug?.({ trackKey: track.trackKey, error: message }, 'spotify verify skipped');
+      }
+
+      const finalResult = spotifyMatch
+        ? {
+            ...result,
+            isrc: spotifyMatch.isrc || result.isrc || null,
+            spotifyTrackId: spotifyMatch.spotifyTrackId,
+            spotifyConfidence: spotifyMatch.confidence,
+            canonicalSource: spotifyMatch.canonicalSource,
+            canonicalId: spotifyMatch.canonicalId || (spotifyMatch.isrc ? `isrc:${spotifyMatch.isrc.toLowerCase()}` : null)
+          }
+        : result;
+
+      upsertTrackMetadata(this.db, toDbRow(track, finalResult, cached));
+      return { ...finalResult, fromCache: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger?.warn({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'track verification failed; accepting track as unknown');

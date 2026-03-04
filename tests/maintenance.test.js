@@ -976,4 +976,58 @@ describe('database maintenance', () => {
     expect(rows[0].plays).toBe(2);
     fs.rmSync(tmp, { recursive: true, force: true });
   });
+
+  it("merge duplicate maintenance merges apostrophe variants (don't vs dont)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-merge-dup-apostrophe-'));
+    const dbPath = path.join(tmp, 'apostrophe.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'youfm',
+      name: 'YOU FM',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    const canonical = normalizeArtistTitle('raye', "don't leave");
+    const legacyKey = crypto.createHash('sha1').update('raye||dont leave', 'utf8').digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'youfm',
+      '2026-03-03T08:00:00.000Z',
+      'RAYE',
+      "Don't Leave",
+      canonical.artist,
+      canonical.title,
+      canonical.trackKey,
+      'https://example.test',
+      '2026-03-03T09:00:00.000Z',
+      'youfm',
+      '2026-03-03T10:00:00.000Z',
+      'RAYE',
+      'Dont Leave',
+      'raye',
+      'dont leave',
+      legacyKey,
+      'https://example.test',
+      '2026-03-03T11:00:00.000Z'
+    );
+    db.close();
+
+    const result = runMergeDuplicateTracksMaintenance({ dbPath, dryRun: false });
+    expect(result.merged).toBeGreaterThanOrEqual(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, count(*) as plays
+      from plays
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
 });

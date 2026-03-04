@@ -6,6 +6,7 @@ import {
   isLikelyNoiseTrack,
   isLikelyJingleLike,
   normalizeArtistTitle,
+  canonicalTitleKey,
   primaryArtist,
   artistSet,
   artistOverlapRatioLoose
@@ -237,7 +238,8 @@ function artistOverlapRatio(a, b) {
 }
 
 function normalizeTitleForMatch(value) {
-  return normalizeArtistTitle('', value).title;
+  const normalized = normalizeArtistTitle('', value).title;
+  return canonicalTitleKey(normalized);
 }
 
 function canonicalMapKey(canonicalTitle, canonicalPrimaryArtist) {
@@ -772,6 +774,18 @@ export function runMergeDuplicateTracksMaintenance({
         }
       }
 
+      if (!allowed) {
+        const loserSet = loser.artistSet;
+        const winnerSet = winner.artistSet;
+        const sameArtistSet =
+          loserSet.size === winnerSet.size &&
+          Array.from(loserSet).every((token) => winnerSet.has(token));
+        if (sameArtistSet && loser.titleMatch === winner.titleMatch && loser.primaryArtist === winner.primaryArtist) {
+          allowed = true;
+          score = 25;
+        }
+      }
+
       if (!allowed) continue;
 
       candidates.push({
@@ -905,6 +919,38 @@ export function runMergeDuplicateTracksMaintenance({
 
 export function runTitleVariantMergeMaintenance(opts) {
   return runMergeDuplicateTracksMaintenance(opts);
+}
+
+export function runCanonicalMapRefreshMaintenance({ dbPath, logger }) {
+  const db = openDb(dbPath);
+  const rows = db.prepare(`
+    select track_key, min(artist) as artist, min(title) as title
+    from plays
+    group by track_key
+  `).all();
+  const nowIso = isoUtcNow();
+  let updated = 0;
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      const normalized = normalizeArtistTitle(row.artist, row.title);
+      if (!normalized.artist || !normalized.title) continue;
+      const canonicalTitle = normalizeTitleForMatch(normalized.title);
+      const canonicalPrimaryArtist = primaryArtist(normalized.artist);
+      if (!canonicalTitle || !canonicalPrimaryArtist) continue;
+      upsertCanonicalMap(db, {
+        canonical_title: canonicalTitle,
+        canonical_primary_artist: canonicalPrimaryArtist,
+        canonical_track_key: row.track_key,
+        updated_at_utc: nowIso
+      });
+      updated += 1;
+    }
+  });
+  tx();
+  db.close();
+  const result = { scanned: rows.length, updated };
+  logger?.info(result, 'canonical map refresh maintenance completed');
+  return result;
 }
 
 export function runManualTrackMerge({
@@ -1684,6 +1730,16 @@ export async function runIngest({ configPath, dbPath, logger }) {
           source_url: play.sourceUrl || usedUrl,
           ingested_at_utc: ingestedAt
         });
+
+        if (canonicalTitleKey && canonicalPrimaryArtist) {
+          upsertCanonicalMap(db, {
+            canonical_title: canonicalTitleKey,
+            canonical_primary_artist: canonicalPrimaryArtist,
+            canonical_track_key: canonicalTrackKey,
+            updated_at_utc: ingestedAt
+          });
+          canonicalLookup.set(mapKey, canonicalTrackKey);
+        }
       }
 
       totalInserted += inserted;
