@@ -23,7 +23,6 @@ create table if not exists plays(
 
 create index if not exists idx_plays_station_played_at on plays(station_id, played_at_utc);
 create index if not exists idx_plays_track_key on plays(track_key);
-create index if not exists idx_plays_station_songkey_playedat on plays(station_id, dedup_song_key, played_at_utc);
 
 create table if not exists play_dedup_events(
   id integer primary key autoincrement,
@@ -105,7 +104,6 @@ create table if not exists track_metadata(
   last_checked_utc text not null
 );
 
-create index if not exists idx_track_metadata_isrc on track_metadata(isrc);
 
 create table if not exists backpool_station_summary(
   station_id text primary key,

@@ -1674,6 +1674,7 @@ export async function runIngest({ configPath, dbPath, logger }) {
       let skippedNoise = 0;
       let skippedJingle = 0;
       let dedupedCooldown = 0;
+      const dedupSamples = [];
       const ingestedAt = isoUtcNow();
       const verifiedByTrackKey = new Map();
 
@@ -1748,13 +1749,19 @@ export async function runIngest({ configPath, dbPath, logger }) {
         });
         if (dedupDecision.deduped) {
           dedupedCooldown += 1;
-          logger?.info?.({
+          const dedupPayload = {
             sender_id: station.id,
             song_key: dedupSongKey,
             event_time: eventPlayedAtUtc,
             last_counted_time: dedupDecision.lastCountedAtUtc,
             delta_seconds: dedupDecision.deltaSeconds
-          }, 'play deduped by cooldown');
+          };
+          if (dedupSamples.length < 5) dedupSamples.push(dedupPayload);
+          if (process.env.YRPA_LOG_DEDUP_EACH === '1') {
+            logger?.info?.(dedupPayload, 'play deduped by cooldown');
+          } else {
+            logger?.debug?.(dedupPayload, 'play deduped by cooldown');
+          }
           if (storeDedupedEvents) {
             insertDedupEvent(db, {
               station_id: station.id,
@@ -1800,6 +1807,17 @@ export async function runIngest({ configPath, dbPath, logger }) {
       }
 
       totalInserted += inserted;
+      if (dedupedCooldown > 0) {
+        logger.info(
+          {
+            station: station.id,
+            dedupedCooldown,
+            dedupCooldownSeconds,
+            samples: dedupSamples
+          },
+          'dedup cooldown summary'
+        );
+      }
       logger.info(
         {
           station: station.id,

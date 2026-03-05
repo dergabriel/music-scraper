@@ -1,163 +1,19 @@
 <!doctype html>
-<html lang="de" data-theme="light" data-bs-theme="light">
+<html lang="de">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Music Scraper Backpool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
-      integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-      crossorigin="anonymous"
     />
-    <link rel="stylesheet" href="/assets/ui.css" />
+    <link rel="stylesheet" href="/assets/horizon-ui.css" />
   </head>
-  <body class="bg-body-tertiary">
-    <nav class="navbar navbar-expand-lg bg-body border-bottom sticky-top">
-      <div class="container-fluid">
-        <a class="navbar-brand fw-semibold" href="/backpool">Music Scraper Backpool</a>
-        <div class="d-flex align-items-center gap-2 ms-auto">
-          <a class="btn btn-outline-secondary btn-sm" href="/dashboard">Übersicht</a>
-          <a class="btn btn-outline-secondary btn-sm" href="/new-titles">Neue Titel</a>
-          <a class="btn btn-primary btn-sm" href="/backpool">Backpool</a>
-          <a class="btn btn-outline-secondary btn-sm" href="/tracks">Titel</a>
-          <a class="btn btn-outline-secondary btn-sm" href="/api/docs" target="_blank" rel="noreferrer">API</a>
-          <button id="themeToggle" class="btn btn-outline-primary btn-sm" type="button">Dunkel</button>
-        </div>
-      </div>
-    </nav>
-
-    <main class="container-fluid py-3">
-      <section class="card shadow-sm mb-3">
-        <div class="card-body">
-          <h2 class="h5 mb-2">Backpool Bericht</h2>
-          <p class="text-secondary mb-3">Konkrete Rotation-Backpool-Titel je Sender, inkl. leicht lesbarer Rotationsmuster.</p>
-          <div class="row g-2 align-items-end">
-            <div class="col-12 col-lg-3">
-              <label class="form-label">Sender</label>
-              <select id="stationSelect" class="form-select"><option value="">Alle Sender</option></select>
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label">Von</label>
-              <input id="fromInput" class="form-control" type="date" />
-            </div>
-            <div class="col-6 col-lg-2">
-              <label class="form-label">Bis</label>
-              <input id="toInput" class="form-control" type="date" />
-            </div>
-            <div class="col-12 col-lg-3">
-              <label class="form-label">Backpool-Profil</label>
-              <select id="rotationPresetSelect" class="form-select">
-                <option value="balanced" selected>Standard</option>
-                <option value="easy">Mehr Kandidaten (lockerer)</option>
-                <option value="strict">Weniger, aber klarere (strenger)</option>
-              </select>
-              <small id="presetHint" class="text-secondary"></small>
-            </div>
-            <div class="col-6 col-lg-1">
-              <label class="form-label">Min. Einsätze</label>
-              <input id="minPlaysInput" class="form-control" type="number" min="1" max="500" value="1" />
-            </div>
-            <div class="col-6 col-lg-1">
-              <label class="form-label">Max. Titel</label>
-              <input id="topInput" class="form-control" type="number" min="1" max="500" value="500" />
-            </div>
-            <div class="col-12 col-lg-2">
-              <button id="loadBtn" class="btn btn-primary w-100" type="button">Laden</button>
-            </div>
-            <div class="col-12">
-              <details class="backpool-advanced">
-                <summary>Erweiterte Optionen</summary>
-                <div class="row g-2 mt-2">
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Rotation min/Tag</label>
-                    <input id="rotationMinDailyPlaysInput" class="form-control" type="number" min="0.01" max="24" step="0.01" value="0.35" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Rotation max/Tag</label>
-                    <input id="lowRotationMaxDailyPlaysInput" class="form-control" type="number" min="0.1" max="24" step="0.1" value="1.2" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Min. aktive Tage</label>
-                    <input id="rotationMinActiveDaysInput" class="form-control" type="number" min="1" max="366" step="1" value="4" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Min. Spanntage</label>
-                    <input id="rotationMinSpanDaysInput" class="form-control" type="number" min="1" max="366" step="1" value="14" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Min. Release-Alter</label>
-                    <input id="rotationMinReleaseAgeDaysInput" class="form-control" type="number" min="0" max="3660" step="1" value="1095" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Min. Sender-Alter</label>
-                    <input id="minTrackAgeDaysInput" class="form-control" type="number" min="1" max="3660" step="1" value="30" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Jahre (Altlogik)</label>
-                    <input id="yearsInput" class="form-control" type="number" min="1" max="40" value="5" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Min. Treffsicherheit</label>
-                    <input id="minConfidenceInput" class="form-control" type="number" min="0" max="1" step="0.01" value="0.72" />
-                  </div>
-                  <div class="col-6 col-lg-2">
-                    <label class="form-label">Meta-Lookups</label>
-                    <input id="maxMetaLookupsInput" class="form-control" type="number" min="0" max="400" step="10" value="40" />
-                  </div>
-                  <div class="col-6 col-lg-3">
-                    <div class="form-check mt-4">
-                      <input class="form-check-input" type="checkbox" id="hydrateInput" />
-                      <label class="form-check-label" for="hydrateInput">Release-Daten anreichern</label>
-                    </div>
-                  </div>
-                  <div class="col-6 col-lg-3">
-                    <div class="form-check mt-4">
-                      <input class="form-check-input" type="checkbox" id="rotationAdaptiveInput" checked />
-                      <label class="form-check-label" for="rotationAdaptiveInput">Adaptive Auswertung</label>
-                    </div>
-                  </div>
-                </div>
-              </details>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="card shadow-sm">
-        <div class="card-body">
-          <p id="state" class="text-secondary mb-2">Lade Backpool-Daten...</p>
-          <p id="summary" class="mb-3"></p>
-          <div class="mb-2">
-            <input id="backpoolSearchInput" class="form-control" type="text" placeholder="Backpool durchsuchen: Interpret, Titel oder Sender" />
-          </div>
-          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-            <button id="sortModeBtn" class="btn btn-outline-secondary btn-sm" type="button">Senderweise sortieren</button>
-            <span id="listState" class="text-secondary"></span>
-          </div>
-          <div class="table-wrap mb-3">
-            <table id="allBackpoolTable" class="table table-sm table-hover align-middle mb-0">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Titel</th>
-                  <th>Sender</th>
-                  <th>Einsätze</th>
-                  <th>Ø/Tag</th>
-                  <th>Aktive Tage</th>
-                  <th>Spanntage</th>
-                  <th>Ø Abstand</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <h3 class="h6 mb-2">Sender-Details</h3>
-          <div id="songCards" class="backpool-cards"></div>
-        </div>
-      </section>
-    </main>
-
-    <script type="module" src="/assets/backpool.js"></script>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/assets/backpool-horizon.js"></script>
   </body>
-  </html>
+</html>

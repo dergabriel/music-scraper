@@ -49,6 +49,7 @@ function ensureTrackMetadataColumns(db) {
     db.exec('alter table plays add column dedup_song_key text');
   }
   db.exec('create index if not exists idx_plays_station_songkey_playedat on plays(station_id, dedup_song_key, played_at_utc)');
+  db.exec('create index if not exists idx_track_metadata_isrc on track_metadata(isrc)');
 }
 
 export function upsertStation(db, station) {

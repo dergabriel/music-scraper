@@ -1,0 +1,53 @@
+:root {
+  color-scheme: light;
+}
+
+:root.chakra-ui-dark,
+.chakra-ui-dark {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background: transparent;
+  color: inherit;
+}
+
+.horizon-scroll {
+  scrollbar-width: thin;
+}
+
+.horizon-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.horizon-scroll::-webkit-scrollbar-thumb {
+  background: #b9c0d4;
+  border-radius: 999px;
+}
+
+.horizon-app-shell {
+  min-height: 100vh;
+}
+
+.horizon-track-selected {
+  outline: 2px solid #2b6cb0;
+  outline-offset: -2px;
+}
+
+.horizon-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
