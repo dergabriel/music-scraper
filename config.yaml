@@ -282,16 +282,20 @@ stations:
 
   - id: "radio_koeln"
     name: "Radio Köln (Radio NRW)"
-    playlist_url: "https://onlineradiobox.com/de/radiokoeln/playlist/"
+    playlist_url: "https://api-prod.nrwlokalradios.com/playlist/latest?station=24&req_station=24&count=500"
     fallback_urls:
-      - "https://onlineradiobox.com/de/radio-koeln/playlist/"
-    parser: "onlineradiobox"
+      - "https://api-prod.nrwlokalradios.com/playlist/latest?station=24&count=500"
+      - "https://api-prod.nrwlokalradios.com/playlist/latest?station=24&req_station=24&count=250"
+    parser: "nrwlokalradios_json"
     fetcher: "http"
     timezone: "Europe/Berlin"
 
   - id: "capital_fm"
     name: "Capital FM"
-    playlist_url: "https://onlineradiobox.com/uk/capitalfm/playlist/"
-    parser: "onlineradiobox"
+    playlist_url: "https://radio.menu/stations/capitalfm-com-capital-fm/playlist/"
+    fallback_urls:
+      - "https://radio.menu/stations/capitalfm-com-capital-fm/"
+      - "https://onlineradiobox.com/uk/capitalfm/playlist/"
+    parser: "generic_html_or_onlineradiobox"
     fetcher: "http"
     timezone: "Europe/London"

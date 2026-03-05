@@ -8,7 +8,7 @@ const StationSchema = z.object({
   name: z.string().min(1),
   playlist_url: z.string().min(1),
   fallback_urls: z.array(z.string().min(1)).optional().default([]),
-  parser: z.enum(['dlf_nova', 'fluxfm', 'onlineradiobox', 'generic_html_or_onlineradiobox', 'generic_html']),
+  parser: z.enum(['dlf_nova', 'fluxfm', 'onlineradiobox', 'generic_html_or_onlineradiobox', 'generic_html', 'nrwlokalradios_json', 'radiomenu']),
   fetcher: z.enum(['http', 'playwright']).default('http'),
   timezone: z.string().min(1).default('Europe/Berlin'),
   enforce_one_play_per_minute: z.boolean().optional().default(false),

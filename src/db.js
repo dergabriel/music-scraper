@@ -164,6 +164,8 @@ export function getStationTrackCountsWithMetadata(db, stationId, startUtcIso, en
       min(m.release_date_utc) as release_date_utc,
       min(m.verification_confidence) as verification_confidence,
       min(m.verified_exists) as verified_exists,
+      min(m.external_url) as external_url,
+      min(m.preview_url) as preview_url,
       min(m.genre) as genre,
       min(m.album) as album
     from plays p
@@ -464,7 +466,7 @@ export function listCanonicalMap(db) {
   `).all();
 }
 
-export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
+export function listTracks(db, { query = '', stationId, limit = 100, includeTrackKey } = {}) {
   const numericLimit = Number(limit);
   const parsedLimit = Number.isFinite(numericLimit) && numericLimit > 0
     ? Math.max(1, Math.min(numericLimit, 5000))
@@ -476,8 +478,18 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
     return db.prepare(`${sql}\n      limit ?`).all(...params, parsedLimit);
   };
 
-  if (stationId && query) {
-    return run(`
+  const includeKey = String(includeTrackKey || '').trim();
+  const withIncludedTrack = (rows) => {
+    if (!includeKey || rows.some((row) => row.track_key === includeKey)) return rows;
+
+    const where = ['p.track_key = ?'];
+    const params = [includeKey];
+    if (stationId) {
+      where.push('p.station_id = ?');
+      params.push(stationId);
+    }
+
+    const included = db.prepare(`
       select
         p.track_key,
         min(p.artist) as artist,
@@ -488,18 +500,49 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
         min(p.played_at_utc) as first_played_at_utc,
         max(p.played_at_utc) as last_played_at_utc,
         min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence
+        min(m.verification_confidence) as verification_confidence,
+        min(m.external_url) as external_url,
+        min(m.preview_url) as preview_url
+      from plays p
+      left join track_metadata m on m.track_key = p.track_key
+      where ${where.join(' and ')}
+      group by p.track_key
+    `).get(...params);
+
+    if (!included) return rows;
+
+    if (parsedLimit != null && rows.length >= parsedLimit) {
+      return [included, ...rows.slice(0, Math.max(0, parsedLimit - 1))];
+    }
+    return [included, ...rows];
+  };
+
+  if (stationId && query) {
+    return withIncludedTrack(run(`
+      select
+        p.track_key,
+        min(p.artist) as artist,
+        min(p.title) as title,
+        count(*) as total_plays,
+        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
+        min(p.played_at_utc) as first_played_at_utc,
+        max(p.played_at_utc) as last_played_at_utc,
+        min(m.release_date_utc) as release_date_utc,
+        min(m.verification_confidence) as verification_confidence,
+        min(m.external_url) as external_url,
+        min(m.preview_url) as preview_url
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where p.station_id = ?
         and (p.artist like ? or p.title like ?)
       group by p.track_key
       order by total_plays desc, artist asc, title asc
-    `, [stationId, `%${query}%`, `%${query}%`]);
+    `, [stationId, `%${query}%`, `%${query}%`]));
   }
 
   if (stationId) {
-    return run(`
+    return withIncludedTrack(run(`
       select
         p.track_key,
         min(p.artist) as artist,
@@ -510,17 +553,19 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
         min(p.played_at_utc) as first_played_at_utc,
         max(p.played_at_utc) as last_played_at_utc,
         min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence
+        min(m.verification_confidence) as verification_confidence,
+        min(m.external_url) as external_url,
+        min(m.preview_url) as preview_url
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where p.station_id = ?
       group by p.track_key
       order by total_plays desc, artist asc, title asc
-    `, [stationId]);
+    `, [stationId]));
   }
 
   if (query) {
-    return run(`
+    return withIncludedTrack(run(`
       select
         p.track_key,
         min(p.artist) as artist,
@@ -531,16 +576,18 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
         min(p.played_at_utc) as first_played_at_utc,
         max(p.played_at_utc) as last_played_at_utc,
         min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence
+        min(m.verification_confidence) as verification_confidence,
+        min(m.external_url) as external_url,
+        min(m.preview_url) as preview_url
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where p.artist like ? or p.title like ?
       group by p.track_key
       order by total_plays desc, artist asc, title asc
-    `, [`%${query}%`, `%${query}%`]);
+    `, [`%${query}%`, `%${query}%`]));
   }
 
-  return run(`
+  return withIncludedTrack(run(`
     select
       p.track_key,
       min(p.artist) as artist,
@@ -551,12 +598,14 @@ export function listTracks(db, { query = '', stationId, limit = 100 } = {}) {
       min(p.played_at_utc) as first_played_at_utc,
       max(p.played_at_utc) as last_played_at_utc,
       min(m.release_date_utc) as release_date_utc,
-      min(m.verification_confidence) as verification_confidence
+      min(m.verification_confidence) as verification_confidence,
+      min(m.external_url) as external_url,
+      min(m.preview_url) as preview_url
     from plays p
     left join track_metadata m on m.track_key = p.track_key
     group by p.track_key
     order by total_plays desc, artist asc, title asc
-  `);
+  `));
 }
 
 export function listNewTitles(
@@ -564,14 +613,27 @@ export function listNewTitles(
   {
     startUtcIso,
     endUtcIso,
+    referenceDateIso,
     stationId,
     query = '',
     minPlays = 1,
-    limit = 250
+    limit = 250,
+    requireReleaseDate = true,
+    maxReleaseAgeDays = 730,
+    minReleaseConfidence = 0.55
   } = {}
 ) {
   const parsedLimit = Math.max(1, Math.min(Number(limit) || 250, 5000));
   const parsedMinPlays = Math.max(1, Math.min(Number(minPlays) || 1, 5000));
+  const parsedRequireReleaseDate = Boolean(requireReleaseDate);
+  const parsedMaxReleaseAgeDays = Number.isFinite(Number(maxReleaseAgeDays))
+    ? Math.max(0, Math.min(Number(maxReleaseAgeDays), 36500))
+    : 730;
+  const parsedMinReleaseConfidence = Number.isFinite(Number(minReleaseConfidence))
+    ? Math.max(0, Math.min(Number(minReleaseConfidence), 1))
+    : 0.55;
+  const refDateIso = String(referenceDateIso || '').trim() || null;
+  const candidateLimit = Math.max(parsedLimit, Math.min(20000, parsedLimit * 6));
   const hasQuery = String(query || '').trim().length > 0;
   const sqlQuery = `%${String(query || '').trim()}%`;
 
@@ -599,7 +661,10 @@ export function listNewTitles(
       count(*) as total_plays,
       count(distinct p.station_id) as station_count,
       group_concat(distinct s.name) as stations_csv,
-      min(m.release_date_utc) as release_date_utc
+      min(m.release_date_utc) as release_date_utc,
+      min(m.verification_confidence) as release_confidence,
+      min(m.external_url) as external_url,
+      min(m.preview_url) as preview_url
     from plays p
     left join stations s on s.id = p.station_id
     left join track_metadata m on m.track_key = p.track_key
@@ -612,9 +677,30 @@ export function listNewTitles(
     limit ?
   `;
 
-  const rows = db.prepare(sql).all(...params, startUtcIso, endUtcIso, parsedMinPlays, parsedLimit);
-  return rows.map((row) => ({
+  const rows = db.prepare(sql).all(...params, startUtcIso, endUtcIso, parsedMinPlays, candidateLimit);
+  const referenceMs = refDateIso ? Date.parse(`${refDateIso}T12:00:00.000Z`) : Date.parse(endUtcIso);
+
+  const filtered = rows.filter((row) => {
+    const releaseIso = row?.release_date_utc ? String(row.release_date_utc) : '';
+    const releaseMs = releaseIso ? Date.parse(releaseIso) : NaN;
+    const hasRelease = Number.isFinite(releaseMs);
+    const confidence = Number(row?.release_confidence);
+    const hasConfidence = Number.isFinite(confidence);
+
+    if (parsedRequireReleaseDate && !hasRelease) return false;
+    if (parsedRequireReleaseDate && (!hasConfidence || confidence < parsedMinReleaseConfidence)) return false;
+
+    if (hasRelease && Number.isFinite(referenceMs) && Number.isFinite(parsedMaxReleaseAgeDays)) {
+      const ageDays = Math.max(0, Math.floor((referenceMs - releaseMs) / 86400000));
+      if (ageDays > parsedMaxReleaseAgeDays) return false;
+    }
+
+    return true;
+  });
+
+  return filtered.slice(0, parsedLimit).map((row) => ({
     ...row,
+    release_confidence: Number.isFinite(Number(row?.release_confidence)) ? Number(row.release_confidence) : null,
     stations: String(row.stations_csv || '')
       .split(',')
       .map((value) => value.trim())

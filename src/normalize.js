@@ -29,6 +29,10 @@ const NON_MUSIC_CONTEXT_PATTERN =
   /\((handel|retail|werbung|promo)\)/i;
 const STATION_SLOGAN_PATTERN =
   /\bmehr\s+musik\b.*\bmehr\s+abwechslung\b|\bmehr\s+\w+\b.*\bmehr\s+\w+\b.*\bmehr\s+\w+\b|\bniedersachs(?:en|e)\b/i;
+const DATE_AMPERSAND_PREFIX_PATTERN =
+  /^(?:\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+\d{4})\s*&\s+/i;
+const EVENT_SCHEDULE_PATTERN =
+  /\b(radio\s*1(?:['’]s|\s+s)?\s+big\s+weekend|big\s+weekend|lineup|setlist|festival|live\s+from|live\s+at|bbc\s+radio)\b/i;
 const GENERIC_STATION_TOKENS = new Set([
   'radio',
   'sender',
@@ -50,6 +54,15 @@ const EXPLICIT_EDITION_PATTERN =
   /^(?:taylor'?s?\s+version|taylor\s+version|tv|original\s+version|album\s+version)$/i;
 const GENERIC_EDITION_BLOCK_PATTERN = /\s*[\[(]\s*([^\]\)]{1,64})\s*[\])]\s*$/u;
 const GENERIC_EDITION_DISALLOWED_PATTERN = /\b(remix|edit|mix|extended|live|acoustic)\b/i;
+const EVENT_TRAILING_BLOCK_PATTERN = /\s*[\[(]\s*([^\]\)]{1,140})\s*[\])]\s*$/u;
+const EVENT_TAG_PATTERN =
+  /\b(radio\s*\d+|bbc|big\s+weekend|festival|live\s+lounge|special|session)\b/i;
+const EVENT_DATE_PATTERN =
+  /\b(?:\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+\d{4}|\d{4})\b/i;
+const DATE_EVENT_PREFIX_CLEAN_PATTERN =
+  /^\s*(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+\d{4})\s*&\s+/i;
+const RADIO_EVENT_SUFFIX_CLEAN_PATTERN =
+  /\s*(?:[-–—,:]\s*)?(?:radio\s*\d+(?:['’]s|\s+s)?\s+big\s+weekend(?:\s*\d{4})?)\s*$/i;
 
 function clean(input) {
   return (input ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -153,6 +166,26 @@ function stripEditionParentheses(input) {
 
 function stripTrailingYearEditionTag(input) {
   return String(input ?? '').replace(/\s'2[0-9]\s*$/u, '').trim();
+}
+
+function stripEventParentheticalSuffix(input) {
+  const source = String(input ?? '');
+  const match = source.match(EVENT_TRAILING_BLOCK_PATTERN);
+  if (!match) return source;
+
+  const content = String(match[1] ?? '').trim();
+  if (!content) return source;
+  if (!EVENT_TAG_PATTERN.test(content)) return source;
+  if (!EVENT_DATE_PATTERN.test(content)) return source;
+
+  return source.replace(EVENT_TRAILING_BLOCK_PATTERN, '').trim();
+}
+
+function stripDateEventSyntax(input) {
+  let out = String(input ?? '');
+  out = out.replace(DATE_EVENT_PREFIX_CLEAN_PATTERN, '').trim();
+  out = out.replace(RADIO_EVENT_SUFFIX_CLEAN_PATTERN, '').trim();
+  return out;
 }
 
 function stripTrailingTitlePunctuation(input) {
@@ -331,6 +364,17 @@ function looksLikeEditorialOrBulletin(text) {
   return !hasMusicJoiners && hasClauseSeparators && stopwordHits >= 3;
 }
 
+function looksLikeEventScheduleLine(artistRaw, titleRaw) {
+  const artist = String(artistRaw ?? '').trim();
+  const title = String(titleRaw ?? '').trim();
+  const combined = `${artist} ${title}`.toLowerCase();
+  if (!combined) return false;
+
+  if (EVENT_SCHEDULE_PATTERN.test(combined) && DATE_AMPERSAND_PREFIX_PATTERN.test(title)) return true;
+  if (/\bradio\s*1(?:['’]s|\s+s)?\s+big\s+weekend\b/i.test(combined) && DATE_AMPERSAND_PREFIX_PATTERN.test(title)) return true;
+  return false;
+}
+
 export function isLikelyNoiseTrack(artistRaw, titleRaw, { stationName = '', stationId = '' } = {}) {
   const artist = String(artistRaw ?? '');
   const title = String(titleRaw ?? '');
@@ -347,6 +391,7 @@ export function isLikelyNoiseTrack(artistRaw, titleRaw, { stationName = '', stat
   if (BROADCAST_BULLETIN_PATTERN.test(combined)) return true;
   if (AD_BRAND_PATTERN.test(combined)) return true;
   if (AD_DURATION_PATTERN.test(combined) && AD_BRAND_PATTERN.test(combined)) return true;
+  if (looksLikeEventScheduleLine(artist, title)) return true;
   if (looksLikeEditorialOrBulletin(combined)) return true;
   if (containsAnyStationTerm(combined, stationName, stationId) && /(?:show|nacht|studio|live|haus|sendung|ard|nachrichten|news)/i.test(combined)) return true;
   const stationArtist = containsAnyStationTerm(artist, stationName, stationId);
@@ -394,7 +439,11 @@ export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', st
     stripTrailingTitlePunctuation(
       stripTrailingYearEditionTag(
         stripEditionParentheses(
-          stripShortParentheticalSubtitle(titlePrepared)
+          stripEventParentheticalSuffix(
+            stripDateEventSyntax(
+              stripShortParentheticalSubtitle(titlePrepared)
+            )
+          )
         )
       )
     )

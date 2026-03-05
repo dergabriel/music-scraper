@@ -45,6 +45,36 @@ function shortDateLabel(period) {
   return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
 }
 
+function fmtDateOnly(iso) {
+  if (!iso) return '-';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso);
+  return date.toLocaleDateString('de-DE');
+}
+
+function PreviewControl({ previewUrl, externalUrl, compact = false, stopPropagation = false }) {
+  const clickHandler = stopPropagation
+    ? (event) => event.stopPropagation()
+    : undefined;
+
+  if (previewUrl) {
+    return html`
+      <${Chakra.VStack} align="start" spacing="1">
+        <audio controls preload="none" src=${previewUrl} style=${{ height: '30px', width: compact ? '170px' : '220px' }} />
+        ${externalUrl
+          ? html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500" onClick=${clickHandler}>iTunes<//>`
+          : null}
+      <//>
+    `;
+  }
+
+  if (externalUrl) {
+    return html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500" onClick=${clickHandler}>Titelseite<//>`;
+  }
+
+  return html`<${Chakra.Tag} size="sm" colorScheme="orange" borderRadius="999px">Kein Preview<//>`;
+}
+
 function sortRows(rows, sortMode) {
   const data = [...(Array.isArray(rows) ? rows : [])];
   const byString = (a, b) => String(a || '').localeCompare(String(b || ''), 'de', { sensitivity: 'base' });
@@ -329,22 +359,23 @@ function TracksApp() {
         <//>
 
         <${Chakra.SimpleGrid} columns=${{ base: 1, xl: 3 }} spacing="4">
-            <${PanelCard}
-              title="Track-Liste"
-              subtitle=${loading ? 'Lade...' : `${formatNumber(sortedRows.length)} geladen · Zeile anklicken für Einzeltitel-Statistik`}
-              p="4"
-            >
+          <${PanelCard}
+            title="Track-Liste"
+            subtitle=${loading ? 'Lade...' : `${formatNumber(sortedRows.length)} geladen · Zeile anklicken für Einzeltitel-Statistik`}
+            p="4"
+          >
             <${Chakra.TableContainer} maxH="650px" overflowY="auto" className="horizon-scroll" border="1px solid" borderColor=${ui.lineColor} borderRadius="14px">
                 <${Chakra.Table} size="sm">
                   <${Chakra.Thead}>
-                  <${Chakra.Tr}>
-                    <${Chakra.Th}>Track<//>
-                    <${Chakra.Th}>Plays<//>
-                    <${Chakra.Th}>Plays/Tag<//>
-                    <${Chakra.Th}>Erstes Play<//>
-                    <${Chakra.Th}>Letztes Play<//>
-                    <${Chakra.Th}>Analyse<//>
-                  <//>
+                    <${Chakra.Tr}>
+                      <${Chakra.Th}>Track<//>
+                      <${Chakra.Th}>Plays<//>
+                      <${Chakra.Th}>Plays/Tag<//>
+                      <${Chakra.Th}>Release<//>
+                      <${Chakra.Th}>Erstes Play<//>
+                      <${Chakra.Th}>Letztes Play<//>
+                      <${Chakra.Th}>Analyse<//>
+                    <//>
                 <//>
                 <${Chakra.Tbody}>
                   ${sortedRows.map((row) => html`
@@ -362,11 +393,18 @@ function TracksApp() {
                       <//>
                       <${Chakra.Td}>${formatNumber(row.total_plays)}<//>
                       <${Chakra.Td}>${toNumber(row.plays_per_day).toLocaleString('de-DE', { maximumFractionDigits: 2 })}<//>
+                      <${Chakra.Td}>${fmtDateOnly(row.release_date_utc)}<//>
                       <${Chakra.Td}>${formatDateTime(row.first_played_at_utc)}<//>
                       <${Chakra.Td}>${formatDateTime(row.last_played_at_utc)}<//>
                       <${Chakra.Td}>
-                        <${Chakra.VStack} align="start" spacing="1">
-                          <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500" onClick=${(event) => event.stopPropagation()}>Öffnen<//>
+                          <${Chakra.VStack} align="start" spacing="1">
+                            <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500" onClick=${(event) => event.stopPropagation()}>Öffnen<//>
+                          <${PreviewControl}
+                            previewUrl=${row.preview_url}
+                            externalUrl=${row.external_url}
+                            compact=${true}
+                            stopPropagation=${true}
+                          />
                           <${Chakra.Button} size="xs" variant="outline" onClick=${(event) => { event.stopPropagation(); setWinnerTrackKey(row.track_key); }}>Als Winner<//>
                           <${Chakra.Button} size="xs" variant="outline" onClick=${(event) => { event.stopPropagation(); setLoserTrackKey(row.track_key); }}>Als Loser<//>
                         <//>
@@ -375,7 +413,7 @@ function TracksApp() {
                   `)}
                   ${sortedRows.length === 0 && !loading ? html`
                     <${Chakra.Tr}>
-                      <${Chakra.Td} colSpan="6" color=${ui.textMuted}>Keine Treffer. Filter anpassen oder Ingest laufen lassen.<//>
+                      <${Chakra.Td} colSpan="7" color=${ui.textMuted}>Keine Treffer. Filter anpassen oder Ingest laufen lassen.<//>
                     <//>
                   ` : null}
                 <//>
@@ -383,7 +421,7 @@ function TracksApp() {
             <//>
           <//>
 
-          <${Chakra.VStack} align="stretch" spacing="4">
+          <${Chakra.VStack} align="stretch" spacing="4" gridColumn=${{ base: 'span 1', xl: 'span 2' }}>
             <${PanelCard}
               title="Einzeltitel-Statistik"
               subtitle=${selectedTrack ? `${selectedTrack.artist} - ${selectedTrack.title}` : 'Bitte zuerst einen Titel auswählen'}
@@ -417,6 +455,11 @@ function TracksApp() {
                 ${!selectedTrackKey ? html`
                   <${Chakra.Text} fontSize="sm" color=${ui.textMuted}>Wähle links einen Titel aus der Liste.<//>
                 ` : html`
+                  <${Chakra.HStack} spacing="3" flexWrap="wrap">
+                    <${Chakra.Tag} colorScheme="gray" borderRadius="999px">Release: ${fmtDateOnly(selectedTrack?.release_date_utc)}<//>
+                    <${PreviewControl} previewUrl=${selectedTrack?.preview_url} externalUrl=${selectedTrack?.external_url} />
+                  <//>
+
                   <${Chakra.SimpleGrid} columns=${{ base: 2, md: 3 }} spacing="2">
                     <${MiniMetric} label="Plays im Zeitraum" value=${formatNumber(detailSummary.allTime)} />
                     <${MiniMetric} label="Heute" value=${formatNumber(detailSummary.today)} />

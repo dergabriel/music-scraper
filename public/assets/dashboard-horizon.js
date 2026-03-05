@@ -31,6 +31,13 @@ function dayLabel(period) {
   return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
 }
 
+function fmtDateOnly(iso) {
+  if (!iso) return '-';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso);
+  return date.toLocaleDateString('de-DE');
+}
+
 function dayCount(fromIso, toIso) {
   const start = Date.parse(`${fromIso}T12:00:00.000Z`);
   const end = Date.parse(`${toIso}T12:00:00.000Z`);
@@ -71,7 +78,7 @@ function buildDayStationMatrix(seriesByStation) {
   });
 
   const allRows = Array.from(byPeriod.values()).sort((a, b) => a.period.localeCompare(b.period));
-  const rows = allRows.slice(-21);
+  const rows = allRows.slice(-21).sort((a, b) => b.period.localeCompare(a.period));
   const maxValue = rows.reduce((max, row) => {
     row.byStation.forEach((s) => {
       if (s.plays > max) max = s.plays;
@@ -166,6 +173,11 @@ function SongPerformanceCard({ selectedTrack, trend, totals, matrix, maxTrackPla
 
       <${Chakra.Progress} value=${score.score} colorScheme="blue" borderRadius="999px" size="md" />
 
+      <${Chakra.HStack} spacing="3" flexWrap="wrap">
+        <${Chakra.Tag} colorScheme="gray" borderRadius="999px">Release: ${fmtDateOnly(selectedTrack.release_date_utc)}<//>
+        <${PreviewControl} previewUrl=${selectedTrack.preview_url} externalUrl=${selectedTrack.external_url} />
+      <//>
+
       <${Chakra.SimpleGrid} columns=${{ base: 1, md: 2 }} spacing="3">
         <${MetricLine} label="Beliebtheit im Panel" value=${score.popularityPct.toFixed(0)} colorScheme="blue" />
         <${MetricLine} label="Momentum" value=${score.momentumPct.toFixed(0)} colorScheme="green" />
@@ -204,6 +216,25 @@ function MiniKpi({ label, value }) {
       <${Chakra.Text} fontSize="lg" fontWeight="700" color=${ui.textPrimary}>${value}<//>
     <//>
   `;
+}
+
+function PreviewControl({ previewUrl, externalUrl, compact = false }) {
+  if (previewUrl) {
+    return html`
+      <${Chakra.HStack} spacing="2" align="center">
+        <audio controls preload="none" src=${previewUrl} style=${{ height: '30px', width: compact ? '180px' : '220px' }} />
+        ${externalUrl
+          ? html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">iTunes<//>`
+          : null}
+      <//>
+    `;
+  }
+
+  if (externalUrl) {
+    return html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">Titelseite<//>`;
+  }
+
+  return html`<${Chakra.Tag} colorScheme="orange" borderRadius="999px">Kein Preview<//>`;
 }
 
 function SenderDayHeatmap({ matrix }) {
@@ -413,8 +444,10 @@ function DashboardApp() {
         stationId,
         limit: '1000'
       });
+      const includeTrackKey = selectedTrackKey || requestedTrackKey || '';
       if (!stationId) params.delete('stationId');
       if (!debouncedSearch) params.delete('q');
+      if (includeTrackKey) params.set('includeTrackKey', includeTrackKey);
 
       const rows = await apiFetch(`/api/tracks?${params.toString()}`);
       const safeRows = Array.isArray(rows) ? rows : [];
@@ -632,7 +665,7 @@ function DashboardApp() {
 
             <${PanelCard}
               title="Wie oft läuft der Song pro Sender pro Tag?"
-              subtitle="Heatmap mit klaren Zahlen je Tag und Sender"
+              subtitle="Heatmap mit klaren Zahlen je Tag und Sender (neuester Tag zuerst)"
             >
               <${SenderDayHeatmap} matrix=${matrix} />
             <//>

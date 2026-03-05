@@ -136,8 +136,8 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/health',
           'GET /api/docs',
           'GET /api/stations',
-          'GET /api/tracks?limit=100&q=QUERY&stationId=ID',
-          'GET /api/new-titles?from=YYYY-MM-DD&to=YYYY-MM-DD&station=ID&limit=250&minPlays=1&q=QUERY',
+          'GET /api/tracks?limit=100&q=QUERY&stationId=ID&includeTrackKey=TRACK_KEY',
+          'GET /api/new-titles?from=YYYY-MM-DD&to=YYYY-MM-DD&station=ID&limit=250&minPlays=1&q=QUERY&requireReleaseDate=1&maxReleaseAgeDays=730&minReleaseConfidence=0.55',
           'GET /api/tracks/search?q=QUERY&limit=30',
           'GET /api/tracks/:trackKey/series?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/series-by-station?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=10',
@@ -176,6 +176,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     tracks: (req, res) => {
       const q = String(safeQueryValue(req.query.q) ?? '').trim();
       const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
+      const includeTrackKey = req.query.includeTrackKey ? String(safeQueryValue(req.query.includeTrackKey)).trim() : undefined;
       const rawLimitParam = safeQueryValue(req.query.limit);
       const limitParam = rawLimitParam == null ? '' : String(rawLimitParam).trim().toLowerCase();
       let limit = 100;
@@ -188,7 +189,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
 
       const db = openDb(dbPath);
       try {
-        const rows = listTracks(db, { query: q, stationId, limit });
+        const rows = listTracks(db, { query: q, stationId, limit, includeTrackKey });
         res.json(rows);
       } finally {
         db.close();
@@ -205,17 +206,40 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 250;
         const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 1);
         const minPlays = Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 5000)) : 1;
+        const requireReleaseDate = String(safeQueryValue(req.query.requireReleaseDate) ?? '1') !== '0';
+        const rawMaxReleaseAgeDays = Number(safeQueryValue(req.query.maxReleaseAgeDays) ?? 730);
+        const maxReleaseAgeDays = Number.isFinite(rawMaxReleaseAgeDays)
+          ? Math.max(0, Math.min(rawMaxReleaseAgeDays, 36500))
+          : 730;
+        const rawMinReleaseConfidence = Number(safeQueryValue(req.query.minReleaseConfidence) ?? 0.55);
+        const minReleaseConfidence = Number.isFinite(rawMinReleaseConfidence)
+          ? Math.max(0, Math.min(rawMinReleaseConfidence, 1))
+          : 0.55;
         const { startUtcIso, endUtcIso } = parseRange(from, to);
 
         const db = openDb(dbPath);
         try {
-          const rows = listNewTitles(db, { startUtcIso, endUtcIso, stationId, query, minPlays, limit });
+          const rows = listNewTitles(db, {
+            startUtcIso,
+            endUtcIso,
+            referenceDateIso: to,
+            stationId,
+            query,
+            minPlays,
+            limit,
+            requireReleaseDate,
+            maxReleaseAgeDays,
+            minReleaseConfidence
+          });
           return res.json({
             from,
             to,
             station: stationId ?? null,
             limit,
             minPlays,
+            requireReleaseDate,
+            maxReleaseAgeDays,
+            minReleaseConfidence,
             rows
           });
         } finally {

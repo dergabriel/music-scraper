@@ -37,6 +37,25 @@ function daysText(days) {
   return `${(days / 365).toFixed(1).replace('.', ',')} Jahre alt`;
 }
 
+function PreviewControl({ previewUrl, externalUrl, compact = false }) {
+  if (previewUrl) {
+    return html`
+      <${Chakra.HStack} spacing="2" align="center">
+        <audio controls preload="none" src=${previewUrl} style=${{ height: '30px', width: compact ? '170px' : '220px' }} />
+        ${externalUrl
+          ? html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">iTunes<//>`
+          : null}
+      <//>
+    `;
+  }
+
+  if (externalUrl) {
+    return html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">Titelseite<//>`;
+  }
+
+  return html`<${Chakra.Tag} size="sm" colorScheme="orange" borderRadius="999px">Kein Preview<//>`;
+}
+
 async function copyToClipboard(value) {
   const text = String(value || '').trim();
   if (!text) return;
@@ -70,7 +89,8 @@ function NewTitlesApp() {
 
   const [onlyRecentRelease, setOnlyRecentRelease] = React.useState(true);
   const [maxReleaseAgeYears, setMaxReleaseAgeYears] = React.useState('2');
-  const [requireReleaseDate, setRequireReleaseDate] = React.useState(false);
+  const [requireReleaseDate, setRequireReleaseDate] = React.useState(true);
+  const [minReleaseConfidence, setMinReleaseConfidence] = React.useState('0.55');
   const [excludeNoise, setExcludeNoise] = React.useState(true);
 
   const [loading, setLoading] = React.useState(false);
@@ -182,6 +202,14 @@ function NewTitlesApp() {
       params.set('to', to || berlinTodayIsoDate());
       params.set('limit', limit || '250');
       params.set('minPlays', minPlays || '1');
+      params.set('requireReleaseDate', requireReleaseDate ? '1' : '0');
+      params.set('minReleaseConfidence', minReleaseConfidence || '0.55');
+      if (onlyRecentRelease) {
+        const maxAgeYears = Math.max(0, Number(maxReleaseAgeYears || 0));
+        params.set('maxReleaseAgeDays', String(Math.round(maxAgeYears * 365)));
+      } else {
+        params.set('maxReleaseAgeDays', '36500');
+      }
       if (stationId) params.set('station', stationId);
       const data = await apiFetch(`/api/new-titles?${params.toString()}`);
       setRowsRaw(Array.isArray(data.rows) ? data.rows : []);
@@ -191,7 +219,7 @@ function NewTitlesApp() {
     } finally {
       setLoading(false);
     }
-  }, [from, to, limit, minPlays, stationId]);
+  }, [from, to, limit, minPlays, stationId, requireReleaseDate, onlyRecentRelease, maxReleaseAgeYears, minReleaseConfidence]);
 
   React.useEffect(() => {
     loadStations().catch((error) => {
@@ -286,7 +314,7 @@ function NewTitlesApp() {
             <${Chakra.Button} size="sm" colorScheme="blue" onClick=${() => loadRows()} isLoading=${loading}>Laden<//>
           <//>
 
-          <${Chakra.SimpleGrid} columns=${{ base: 1, md: 2, xl: 4 }} spacing="3" mt="4">
+          <${Chakra.SimpleGrid} columns=${{ base: 1, md: 2, xl: 5 }} spacing="3" mt="4">
             <${Chakra.Checkbox} isChecked=${onlyRecentRelease} onChange=${(event) => setOnlyRecentRelease(event.target.checked)}>
               Nur aktuelle Releases
             <//>
@@ -296,6 +324,10 @@ function NewTitlesApp() {
             <//>
             <${Chakra.Checkbox} isChecked=${requireReleaseDate} onChange=${(event) => setRequireReleaseDate(event.target.checked)}>
               Nur verifizierte Neuerscheinungen
+            <//>
+            <${Chakra.FormControl}>
+              <${Chakra.FormLabel}>Min. Confidence<//>
+              <${Chakra.Input} type="number" min="0" max="1" step="0.01" value=${minReleaseConfidence} onChange=${(event) => setMinReleaseConfidence(event.target.value)} />
             <//>
             <${Chakra.Checkbox} isChecked=${excludeNoise} onChange=${(event) => setExcludeNoise(event.target.checked)}>
               Nicht-Musik ausblenden
@@ -327,7 +359,10 @@ function NewTitlesApp() {
                   <${Chakra.Badge} colorScheme=${row.ageDays == null ? 'gray' : row.ageDays <= 14 ? 'green' : 'orange'}>
                     ${daysText(row.ageDays)}
                   <//>
-                  <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500">Öffnen<//>
+                  <${Chakra.HStack} spacing="2">
+                    <${PreviewControl} previewUrl=${row.preview_url} externalUrl=${row.external_url} compact=${true} />
+                    <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500">Öffnen<//>
+                  <//>
                 <//>
                 <${Chakra.Text} fontWeight="700" color=${ui.textPrimary}>${row.artist} - ${row.title}<//>
                 <${Chakra.HStack} spacing="2" mt="1">
@@ -375,6 +410,7 @@ function NewTitlesApp() {
                     <${Chakra.Td}>
                       <${Chakra.VStack} align="start" spacing="1">
                         <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500">Öffnen<//>
+                        <${PreviewControl} previewUrl=${row.preview_url} externalUrl=${row.external_url} compact=${true} />
                         ${row.track_key ? html`
                           <${Chakra.Button} size="xs" variant="outline" onClick=${() => copyToClipboard(row.track_key)}>ID kopieren<//>
                         ` : null}

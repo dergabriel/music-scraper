@@ -296,6 +296,65 @@ describe('database maintenance', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it('merges event suffix title variants (radio 1 big weekend) into canonical track key', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-event-suffix-'));
+    const dbPath = path.join(tmp, 'event-suffix.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'bbc_radio_1',
+      name: 'BBC Radio 1',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/London'
+    });
+
+    const canonicalKey = addPlay(db, {
+      stationId: 'bbc_radio_1',
+      playedAtUtcIso: '2026-02-27T08:00:00.000Z',
+      artistRaw: 'James Hype',
+      titleRaw: 'Ferrari'
+    });
+    const legacyTitle = "ferrari (radio 1's big weekend, 23 may 2025)";
+    const legacyEventKey = crypto
+      .createHash('sha1')
+      .update(`james hype||${legacyTitle}`, 'utf8')
+      .digest('hex');
+    db.prepare(`
+      insert into plays(
+        station_id, played_at_utc, artist_raw, title_raw, artist, title, track_key, source_url, ingested_at_utc
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'bbc_radio_1',
+      '2026-02-27T09:00:00.000Z',
+      'James Hype',
+      "Ferrari (Radio 1's Big Weekend, 23 May 2025)",
+      'james hype',
+      legacyTitle,
+      legacyEventKey,
+      'https://example.test',
+      '2026-02-28T10:00:00.000Z'
+    );
+    db.close();
+
+    const dry = runPromoMarkerMaintenance({ dbPath, dryRun: true });
+    expect(dry.candidates).toBe(1);
+
+    const live = runPromoMarkerMaintenance({ dbPath, dryRun: false });
+    expect(live.merged).toBe(1);
+
+    const check = openDb(dbPath);
+    const rows = check.prepare(`
+      select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+      from plays
+      group by track_key
+    `).all();
+    check.close();
+    expect(rows.length).toBe(1);
+    expect(rows[0].track_key).toBe(canonicalKey);
+    expect(rows[0].title).toBe('ferrari');
+    expect(rows[0].plays).toBe(2);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
   it('merges legacy artist-joiner variants into canonical artist track key and rebuilds daily rows', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-canonical-artist-'));
     const dbPath = path.join(tmp, 'canonical.sqlite');

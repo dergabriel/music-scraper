@@ -16,7 +16,8 @@ import {
   runCanonicalMapRefreshMaintenance,
   runTrackOrientationMaintenance,
   runNoisePlayCleanup,
-  runPromoMarkerMaintenance
+  runPromoMarkerMaintenance,
+  runReleaseDateBackfillMaintenance
 } from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
 
@@ -168,7 +169,11 @@ program
   .option('--max-pairs <number>', 'Maximum swapped pairs to process in one run', '5000')
   .option('--min-score-gap <number>', 'Minimum score difference to merge a swapped pair', '0.35')
   .option('--min-play-ratio <number>', 'Minimum play-count ratio fallback for close scores', '1.2')
-  .action((opts) => {
+  .option('--release-max-lookups <number>', 'Maximum release metadata backfill lookups per run', '80')
+  .option('--release-min-plays <number>', 'Minimum plays required for release metadata backfill candidates', '1')
+  .option('--release-min-confidence <number>', 'Minimum release confidence target (0-1)', '0.55')
+  .option('--release-stale-hours <number>', 'Minimum hours before a failed/missing metadata candidate is retried', '12')
+  .action(async (opts) => {
     try {
       runNoisePlayCleanup({
         dbPath: opts.db,
@@ -213,6 +218,16 @@ program
         minPlayRatio: Number(opts.minPlayRatio),
         logger
       });
+      await runReleaseDateBackfillMaintenance({
+        dbPath: opts.db,
+        dryRun: Boolean(opts.dryRun),
+        maxLookups: Number(opts.releaseMaxLookups),
+        minPlays: Number(opts.releaseMinPlays),
+        minConfidence: Number(opts.releaseMinConfidence),
+        staleHours: Number(opts.releaseStaleHours),
+        includeChart: false,
+        logger
+      });
       logger.info(result, 'database maintenance finished');
     } catch (err) {
       logger.error({ err: err.message }, 'database maintenance failed');
@@ -236,6 +251,15 @@ program
         runMergeDuplicateTracksMaintenance({ dbPath: opts.db, logger });
         runCanonicalMapRefreshMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
+        await runReleaseDateBackfillMaintenance({
+          dbPath: opts.db,
+          maxLookups: Number(process.env.YRPA_RELEASE_BACKFILL_DAILY_LOOKUPS || 180),
+          minPlays: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_PLAYS || 1),
+          minConfidence: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_CONFIDENCE || 0.55),
+          staleHours: Number(process.env.YRPA_RELEASE_BACKFILL_STALE_HOURS || 12),
+          includeChart: false,
+          logger
+        });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,
@@ -307,6 +331,15 @@ program
         runMergeDuplicateTracksMaintenance({ dbPath: opts.db, logger });
         runCanonicalMapRefreshMaintenance({ dbPath: opts.db, logger });
         runTrackOrientationMaintenance({ dbPath: opts.db, logger });
+        await runReleaseDateBackfillMaintenance({
+          dbPath: opts.db,
+          maxLookups: Number(process.env.YRPA_RELEASE_BACKFILL_STARTUP_LOOKUPS || 260),
+          minPlays: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_PLAYS || 1),
+          minConfidence: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_CONFIDENCE || 0.55),
+          staleHours: Number(process.env.YRPA_RELEASE_BACKFILL_STALE_HOURS || 12),
+          includeChart: false,
+          logger
+        });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
         runDailyEvaluation({
           configPath: opts.config,

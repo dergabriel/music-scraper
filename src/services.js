@@ -41,6 +41,8 @@ import { GenericHtmlParser } from './parsers/genericHtml.js';
 import { OnlineradioboxParser } from './parsers/onlineradiobox.js';
 import { DlfNovaParser } from './parsers/dlfNova.js';
 import { FluxFmParser } from './parsers/fluxfm.js';
+import { NrwLokalradiosJsonParser } from './parsers/nrwlokalradiosJson.js';
+import { RadioMenuParser } from './parsers/radioMenu.js';
 import { TrackVerifier } from './trackVerifier.js';
 import {
   DEFAULT_DEDUP_COOLDOWN_SECONDS,
@@ -67,6 +69,10 @@ export function parserForStation(station) {
           return first.length ? first : generic.parse(html, sourceUrl);
         }
       };
+    case 'nrwlokalradios_json':
+      return new NrwLokalradiosJsonParser({ timezone: station.timezone });
+    case 'radiomenu':
+      return new RadioMenuParser({ timezone: station.timezone });
     default:
       throw new Error(`Unsupported parser: ${station.parser}`);
   }
@@ -959,6 +965,123 @@ export function runCanonicalMapRefreshMaintenance({ dbPath, logger }) {
   return result;
 }
 
+export async function runReleaseDateBackfillMaintenance({
+  dbPath,
+  dryRun = false,
+  maxLookups = 80,
+  minPlays = 1,
+  minConfidence = 0.55,
+  staleHours = 12,
+  includeChart = false,
+  logger
+}) {
+  const db = openDb(dbPath);
+  const maxLookupsSafe = Math.max(1, Math.min(Number(maxLookups) || 80, 5000));
+  const minPlaysSafe = Math.max(1, Math.min(Number(minPlays) || 1, 100000));
+  const minConfidenceSafe = Math.max(0, Math.min(Number(minConfidence) || 0.55, 1));
+  const staleHoursSafe = Math.max(1, Math.min(Number(staleHours) || 12, 168));
+  const staleCutoffMs = Date.now() - (staleHoursSafe * 60 * 60 * 1000);
+  const candidateWindow = Math.max(maxLookupsSafe, Math.min(50000, maxLookupsSafe * 12));
+
+  const rows = db.prepare(`
+    select
+      t.track_key,
+      t.artist,
+      t.title,
+      t.plays,
+      t.last_played_at_utc,
+      m.release_date_utc,
+      m.verification_confidence,
+      m.last_checked_utc
+    from (
+      select
+        track_key,
+        min(artist) as artist,
+        min(title) as title,
+        count(*) as plays,
+        max(played_at_utc) as last_played_at_utc
+      from plays
+      group by track_key
+    ) t
+    left join track_metadata m on m.track_key = t.track_key
+    where t.plays >= ?
+    order by datetime(t.last_played_at_utc) desc, t.plays desc
+    limit ?
+  `).all(minPlaysSafe, candidateWindow);
+
+  const candidates = [];
+  for (const row of rows) {
+    const conf = Number(row.verification_confidence);
+    const lowConfidence = !Number.isFinite(conf) || conf < minConfidenceSafe;
+    const missingRelease = !row.release_date_utc;
+    if (!missingRelease && !lowConfidence) continue;
+
+    const lastCheckedMs = Date.parse(String(row.last_checked_utc || ''));
+    if (Number.isFinite(lastCheckedMs) && lastCheckedMs >= staleCutoffMs) continue;
+    candidates.push(row);
+  }
+
+  const selected = candidates.slice(0, maxLookupsSafe);
+
+  let attempted = 0;
+  let updatedWithRelease = 0;
+  let stillMissingRelease = 0;
+  let stillLowConfidence = 0;
+  let failed = 0;
+  let lastError = null;
+
+  if (!dryRun && selected.length > 0 && process.env.NODE_ENV !== 'test') {
+    const verifier = new TrackVerifier({ db, logger });
+    for (const row of selected) {
+      attempted += 1;
+      try {
+        const result = await verifier.enrichMetadata(
+          {
+            trackKey: row.track_key,
+            artist: row.artist,
+            title: row.title
+          },
+          {
+            forceRefresh: true,
+            includeChart,
+            quietErrors: true
+          }
+        );
+        const metadata = result?.metadata ?? null;
+        const hasRelease = Boolean(metadata?.release_date_utc);
+        const conf = Number(metadata?.verification_confidence);
+        const lowConfidence = !Number.isFinite(conf) || conf < minConfidenceSafe;
+
+        if (hasRelease) updatedWithRelease += 1;
+        if (!hasRelease) stillMissingRelease += 1;
+        if (lowConfidence) stillLowConfidence += 1;
+      } catch (error) {
+        failed += 1;
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  db.close();
+  const result = {
+    scanned: rows.length,
+    candidates: candidates.length,
+    selected: selected.length,
+    attempted,
+    updatedWithRelease,
+    stillMissingRelease,
+    stillLowConfidence,
+    failed,
+    dryRun,
+    minConfidence: minConfidenceSafe,
+    staleHours: staleHoursSafe,
+    maxLookups: maxLookupsSafe,
+    lastError
+  };
+  logger?.info(result, 'release metadata backfill completed');
+  return result;
+}
+
 export function runManualTrackMerge({
   dbPath,
   winnerTrackKey,
@@ -1244,6 +1367,9 @@ export function runPromoMarkerMaintenance({ dbPath, dryRun = false, maxPairs = 5
       or instr(title, '”') > 0
       or instr(artist, '„') > 0
       or instr(title, '„') > 0
+      or lower(title) like '%big weekend%'
+      or lower(title) like '%radio % big weekend%'
+      or (lower(title) like '%&%' and lower(title) like '%radio%' and lower(title) like '%big weekend%')
     group by track_key
   `).all();
 
@@ -2453,6 +2579,8 @@ export async function runBackpoolAnalysis({
       releaseDate: row.release.toISODate(),
       ageYears: releaseAgeYears(row.release, toBerlin),
       verificationConfidence: row.verification_confidence,
+      externalUrl: row.external_url ?? null,
+      previewUrl: row.preview_url ?? null,
       genre: row.genre ?? null,
       album: row.album ?? null
     });
@@ -2478,6 +2606,8 @@ export async function runBackpoolAnalysis({
       lastPlayedDate: row.lastPlayed?.isValid ? row.lastPlayed.toISODate() : null,
       releaseDate: row.release?.isValid ? row.release.toISODate() : null,
       verificationConfidence: row.verification_confidence,
+      externalUrl: row.external_url ?? null,
+      previewUrl: row.preview_url ?? null,
       genre: row.genre ?? null,
       album: row.album ?? null
     });
@@ -2500,6 +2630,8 @@ export async function runBackpoolAnalysis({
         ageYears: null,
         verificationConfidence: row.verification_confidence,
         metadataIssue: row.metadataIssue,
+        externalUrl: row.external_url ?? null,
+        previewUrl: row.preview_url ?? null,
         genre: row.genre ?? null,
         album: row.album ?? null
       }));

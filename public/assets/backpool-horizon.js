@@ -67,6 +67,32 @@ function dayAgeText(days) {
   return `${toFixedComma(days / 365, 1)} Jahre`;
 }
 
+function fmtDateOnly(iso) {
+  if (!iso) return '-';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso);
+  return date.toLocaleDateString('de-DE');
+}
+
+function PreviewControl({ previewUrl, externalUrl, compact = false }) {
+  if (previewUrl) {
+    return html`
+      <${Chakra.HStack} spacing="2" align="center">
+        <audio controls preload="none" src=${previewUrl} style=${{ height: '30px', width: compact ? '170px' : '220px' }} />
+        ${externalUrl
+          ? html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">iTunes<//>`
+          : null}
+      <//>
+    `;
+  }
+
+  if (externalUrl) {
+    return html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">Titelseite<//>`;
+  }
+
+  return html`<${Chakra.Tag} size="sm" colorScheme="orange" borderRadius="999px">Kein Preview<//>`;
+}
+
 function toIsoDateSafe(value) {
   const str = String(value || '');
   return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : null;
@@ -464,12 +490,13 @@ function BackpoolApp() {
                 <${Chakra.Box} minW="0">
                   <${Chakra.Text} fontSize="sm" fontWeight="700" color=${ui.textPrimary} noOfLines=${1}>${row.artist} - ${row.title}<//>
                   <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>
-                    Erstes Backpool-Signal: ${row.firstPlayedDate || '-'} | Ø/Tag: ${toFixedComma(row.playsPerDay, 2)} | Sender: ${formatNumber(row.stationCount)}
+                    Erstes Backpool-Signal: ${row.firstPlayedDate || '-'} | Release: ${fmtDateOnly(row.releaseDate)} | Ø/Tag: ${toFixedComma(row.playsPerDay, 2)} | Sender: ${formatNumber(row.stationCount)}
                   <//>
                 <//>
-                ${row.trackKey ? html`
-                  <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.trackKey)}`} color="blue.500" whiteSpace="nowrap">Öffnen<//>
-                ` : null}
+                <${Chakra.HStack} spacing="2">
+                  <${PreviewControl} previewUrl=${row.previewUrl} externalUrl=${row.externalUrl} compact=${true} />
+                  ${row.trackKey ? html`<${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.trackKey)}`} color="blue.500" whiteSpace="nowrap">Öffnen<//>` : null}
+                <//>
               <//>
             `)}
             ${recentBackpool.length === 0 ? html`
@@ -528,6 +555,7 @@ function GlobalList({ rows, lineColor, textMuted, textPrimary }) {
               <${Chakra.Td}>
                 <${Chakra.Text} fontWeight="700" color=${textPrimary}>${row.artist}<//>
                 <${Chakra.Text} fontSize="xs" color=${textMuted}>${row.title}<//>
+                <${Chakra.Text} fontSize="xs" color=${textMuted}>Release: ${fmtDateOnly(row.releaseDate)}<//>
                 <${Chakra.Text} fontSize="xs" color=${textMuted}>ID: ${row.trackKey || '-'}<//>
               <//>
               <${Chakra.Td}>${formatNumber(row.plays)}<//>
@@ -542,6 +570,7 @@ function GlobalList({ rows, lineColor, textMuted, textPrimary }) {
                 ${row.trackKey ? html`
                   <${Chakra.VStack} align="start" spacing="1">
                     <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.trackKey)}`} color="blue.500">Öffnen<//>
+                    <${PreviewControl} previewUrl=${row.previewUrl} externalUrl=${row.externalUrl} compact=${true} />
                     <${Chakra.Button} size="xs" variant="outline" onClick=${() => copyToClipboard(row.trackKey)}>ID kopieren<//>
                   <//>
                 ` : '-'}
@@ -581,6 +610,7 @@ function StationView({ rows, lineColor, textMuted, textPrimary }) {
                   <${Chakra.Tr} key=${row._id}>
                     <${Chakra.Td}>
                       <${Chakra.Text} fontWeight="600" color=${textPrimary}>${row.artist} - ${row.title}<//>
+                      <${Chakra.Text} fontSize="xs" color=${textMuted}>Release: ${fmtDateOnly(row.releaseDate)}${(row.previewUrl || row.externalUrl) ? ' · Preview verfügbar' : ''}<//>
                       <${Chakra.Text} fontSize="xs" color=${textMuted}>ID: ${row.trackKey || '-'}<//>
                     <//>
                     <${Chakra.Td}>${formatNumber(row.plays)}<//>

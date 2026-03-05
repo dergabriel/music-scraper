@@ -79,6 +79,20 @@ describe('normalizeArtistTitle', () => {
     expect(a.trackKey).toBe(b.trackKey);
   });
 
+  it('strips trailing event parenthetical suffixes with date context', () => {
+    const a = normalizeArtistTitle('james hype', "ferrari (radio 1's big weekend, 23 may 2025)");
+    const b = normalizeArtistTitle('james hype', 'ferrari');
+    expect(a.title).toBe('ferrari');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
+  it('strips date-ampersand event syntax from title variants', () => {
+    const a = normalizeArtistTitle("barry can't swim", '23 may 2025 & blackpool boulevard radio 1 s big weekend');
+    const b = normalizeArtistTitle("barry can't swim", 'blackpool boulevard');
+    expect(a.title).toBe('blackpool boulevard');
+    expect(a.trackKey).toBe(b.trackKey);
+  });
+
   it("keeps classic year markers like summer '69 untouched", () => {
     const out = normalizeArtistTitle('bryan adams', "summer '69");
     expect(out.title).toBe("summer '69");
@@ -185,6 +199,21 @@ describe('normalizeArtistTitle', () => {
 
   it('marks show-context hints as noise', () => {
     expect(isLikelyNoiseTrack('aus dem 1live haus in köln die junge nacht der ard', '')).toBe(true);
+  });
+
+  it('marks date-and-event syntax lines as noise', () => {
+    expect(
+      isLikelyNoiseTrack(
+        "barry can't swim",
+        "23 may 2025 & blackpool boulevard radio 1 s big weekend"
+      )
+    ).toBe(true);
+    expect(
+      isLikelyNoiseTrack(
+        "barry can't swim",
+        "23 may 2025 & ferrari radio 1 s big weekend"
+      )
+    ).toBe(true);
   });
 
   it('keeps normal tracks with numbers valid', () => {
