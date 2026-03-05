@@ -1,4 +1,4 @@
-import { weekStartBerlinIso } from './date-berlin.js';
+import { weekStartBerlinIso, berlinYesterdayIsoDate, shiftBerlinIsoDate } from './date-berlin.js';
 import {
   React,
   createRoot,
@@ -29,6 +29,20 @@ const SORT_OPTIONS = [
 function toNumber(value) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+function dayCount(fromIso, toIso) {
+  const start = Date.parse(`${fromIso}T12:00:00.000Z`);
+  const end = Date.parse(`${toIso}T12:00:00.000Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 1;
+  return Math.max(1, Math.round((end - start) / (24 * 60 * 60 * 1000)) + 1);
+}
+
+function shortDateLabel(period) {
+  if (!period) return '-';
+  const date = new Date(`${period}T12:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return String(period);
+  return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
 }
 
 function sortRows(rows, sortMode) {
@@ -70,6 +84,16 @@ function TracksApp() {
   const [reportWeekStart, setReportWeekStart] = React.useState(weekStartBerlinIso());
   const [reportRows, setReportRows] = React.useState([]);
   const [reportState, setReportState] = React.useState('Noch kein Senderbericht geladen.');
+  const defaultDetailTo = berlinYesterdayIsoDate();
+  const defaultDetailFrom = shiftBerlinIsoDate(defaultDetailTo, -29);
+  const [detailFrom, setDetailFrom] = React.useState(defaultDetailFrom);
+  const [detailTo, setDetailTo] = React.useState(defaultDetailTo);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const [detailError, setDetailError] = React.useState('');
+  const [detailTotals, setDetailTotals] = React.useState(null);
+  const [detailTrend, setDetailTrend] = React.useState(null);
+  const [detailSeries, setDetailSeries] = React.useState([]);
+  const [detailStations, setDetailStations] = React.useState([]);
 
   const debouncedSearch = useDebouncedValue(search, 250);
   const toast = Chakra.useToast();
@@ -91,6 +115,23 @@ function TracksApp() {
       topTrack: top ? `${top.artist} - ${top.title}` : '-'
     };
   }, [sortedRows]);
+
+  const detailSummary = React.useMemo(() => {
+    const allTime = Number(detailTotals?.totals?.allTime || 0);
+    const days = dayCount(detailFrom, detailTo);
+    const avgPerDay = allTime / days;
+    const growth = Number(detailTrend?.growth_percent || 0);
+    const topStations = Array.isArray(detailStations) ? detailStations.slice(0, 8) : [];
+    return {
+      allTime,
+      today: Number(detailTotals?.totals?.today || 0),
+      thisWeek: Number(detailTotals?.totals?.thisWeek || 0),
+      avgPerDay,
+      growth,
+      plays48h: Number(detailTrend?.plays_last_48h || 0),
+      topStations
+    };
+  }, [detailTotals, detailTrend, detailStations, detailFrom, detailTo]);
 
   const loadStations = React.useCallback(async () => {
     const data = await apiFetch('/api/stations');
@@ -164,6 +205,40 @@ function TracksApp() {
     }
   };
 
+  const loadSelectedDetails = React.useCallback(async () => {
+    if (!selectedTrackKey) {
+      setDetailTotals(null);
+      setDetailTrend(null);
+      setDetailSeries([]);
+      setDetailStations([]);
+      setDetailError('');
+      return;
+    }
+    setDetailLoading(true);
+    setDetailError('');
+    try {
+      const params = new URLSearchParams({ from: detailFrom, to: detailTo, bucket: 'day' });
+      const [totalsRes, trendRes, seriesRes, stationsRes] = await Promise.all([
+        apiFetch(`/api/tracks/${encodeURIComponent(selectedTrackKey)}/totals?from=${encodeURIComponent(detailFrom)}&to=${encodeURIComponent(detailTo)}`),
+        apiFetch(`/api/tracks/${encodeURIComponent(selectedTrackKey)}/trend`),
+        apiFetch(`/api/tracks/${encodeURIComponent(selectedTrackKey)}/series?${params.toString()}`),
+        apiFetch(`/api/tracks/${encodeURIComponent(selectedTrackKey)}/stations?from=${encodeURIComponent(detailFrom)}&to=${encodeURIComponent(detailTo)}`)
+      ]);
+      setDetailTotals(totalsRes || null);
+      setDetailTrend(trendRes || null);
+      setDetailSeries(Array.isArray(seriesRes?.series) ? seriesRes.series : []);
+      setDetailStations(Array.isArray(stationsRes?.stations) ? stationsRes.stations : []);
+    } catch (error) {
+      setDetailTotals(null);
+      setDetailTrend(null);
+      setDetailSeries([]);
+      setDetailStations([]);
+      setDetailError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [selectedTrackKey, detailFrom, detailTo]);
+
   React.useEffect(() => {
     loadStations().catch((error) => {
       const msg = error instanceof Error ? error.message : String(error);
@@ -174,6 +249,10 @@ function TracksApp() {
   React.useEffect(() => {
     loadRows();
   }, [loadRows]);
+
+  React.useEffect(() => {
+    loadSelectedDetails();
+  }, [loadSelectedDetails]);
 
   return html`
     <${AppShell}
@@ -250,11 +329,11 @@ function TracksApp() {
         <//>
 
         <${Chakra.SimpleGrid} columns=${{ base: 1, xl: 3 }} spacing="4">
-          <${PanelCard}
-            title="Track-Liste"
-            subtitle=${loading ? 'Lade...' : `${formatNumber(sortedRows.length)} geladen`}
-            p="4"
-          >
+            <${PanelCard}
+              title="Track-Liste"
+              subtitle=${loading ? 'Lade...' : `${formatNumber(sortedRows.length)} geladen · Zeile anklicken für Einzeltitel-Statistik`}
+              p="4"
+            >
             <${Chakra.TableContainer} maxH="650px" overflowY="auto" className="horizon-scroll" border="1px solid" borderColor=${ui.lineColor} borderRadius="14px">
                 <${Chakra.Table} size="sm">
                   <${Chakra.Thead}>
@@ -305,6 +384,97 @@ function TracksApp() {
           <//>
 
           <${Chakra.VStack} align="stretch" spacing="4">
+            <${PanelCard}
+              title="Einzeltitel-Statistik"
+              subtitle=${selectedTrack ? `${selectedTrack.artist} - ${selectedTrack.title}` : 'Bitte zuerst einen Titel auswählen'}
+              p="4"
+            >
+              <${Chakra.VStack} align="stretch" spacing="3">
+                <${Chakra.HStack} align="end" spacing="3" flexWrap="wrap">
+                  <${Chakra.FormControl} maxW="190px">
+                    <${Chakra.FormLabel}>Von<//>
+                    <${Chakra.Input} type="date" value=${detailFrom} onChange=${(event) => setDetailFrom(event.target.value)} />
+                  <//>
+                  <${Chakra.FormControl} maxW="190px">
+                    <${Chakra.FormLabel}>Bis<//>
+                    <${Chakra.Input} type="date" value=${detailTo} onChange=${(event) => setDetailTo(event.target.value)} />
+                  <//>
+                  <${Chakra.ButtonGroup} size="sm" isAttached variant="outline">
+                    <${Chakra.Button} onClick=${() => { const end = berlinYesterdayIsoDate(); setDetailTo(end); setDetailFrom(shiftBerlinIsoDate(end, -6)); }}>7T<//>
+                    <${Chakra.Button} onClick=${() => { const end = berlinYesterdayIsoDate(); setDetailTo(end); setDetailFrom(shiftBerlinIsoDate(end, -29)); }}>30T<//>
+                    <${Chakra.Button} onClick=${() => { const end = berlinYesterdayIsoDate(); setDetailTo(end); setDetailFrom(shiftBerlinIsoDate(end, -89)); }}>90T<//>
+                  <//>
+                  <${Chakra.Button} colorScheme="blue" onClick=${loadSelectedDetails} isLoading=${detailLoading} isDisabled=${!selectedTrackKey}>Aktualisieren<//>
+                <//>
+
+                ${detailError ? html`
+                  <${Chakra.Alert} status="error" borderRadius="10px">
+                    <${Chakra.AlertIcon} />
+                    <${Chakra.Text}>${detailError}<//>
+                  <//>
+                ` : null}
+
+                ${!selectedTrackKey ? html`
+                  <${Chakra.Text} fontSize="sm" color=${ui.textMuted}>Wähle links einen Titel aus der Liste.<//>
+                ` : html`
+                  <${Chakra.SimpleGrid} columns=${{ base: 2, md: 3 }} spacing="2">
+                    <${MiniMetric} label="Plays im Zeitraum" value=${formatNumber(detailSummary.allTime)} />
+                    <${MiniMetric} label="Heute" value=${formatNumber(detailSummary.today)} />
+                    <${MiniMetric} label="Diese Woche" value=${formatNumber(detailSummary.thisWeek)} />
+                    <${MiniMetric} label="Ø pro Tag" value=${detailSummary.avgPerDay.toLocaleString('de-DE', { maximumFractionDigits: 2 })} />
+                    <${MiniMetric} label="Trend (48h)" value=${formatNumber(detailSummary.plays48h)} />
+                    <${MiniMetric}
+                      label="Wachstum"
+                      value=${`${detailSummary.growth > 0 ? '+' : ''}${detailSummary.growth.toLocaleString('de-DE', { maximumFractionDigits: 1 })}%`}
+                      colorScheme=${detailSummary.growth >= 10 ? 'green' : detailSummary.growth <= -10 ? 'red' : 'orange'}
+                    />
+                  <//>
+
+                  <${Chakra.SimpleGrid} columns=${{ base: 1, lg: 2 }} spacing="3">
+                    <${Chakra.Box} border="1px solid" borderColor=${ui.lineColor} borderRadius="12px" p="3">
+                      <${Chakra.Text} fontSize="sm" fontWeight="700" mb="2" color=${ui.textPrimary}>Plays pro Tag<//>
+                      <${Chakra.VStack} align="stretch" spacing="2" maxH="240px" overflowY="auto" className="horizon-scroll">
+                        ${(detailSeries || []).slice(-14).map((point) => {
+                          const max = Math.max(1, ...(detailSeries || []).map((x) => Number(x.plays || 0)));
+                          const value = Number(point.plays || 0);
+                          return html`
+                            <${Chakra.Box} key=${point.period}>
+                              <${Chakra.HStack} justify="space-between" mb="1">
+                                <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${shortDateLabel(point.period)}<//>
+                                <${Chakra.Text} fontSize="xs" fontWeight="700" color=${ui.textPrimary}>${formatNumber(value)}<//>
+                              <//>
+                              <${Chakra.Progress} value=${Math.round((value / max) * 100)} colorScheme="blue" size="sm" borderRadius="999px" />
+                            <//>
+                          `;
+                        })}
+                        ${detailSeries.length === 0 ? html`<${Chakra.Text} fontSize="xs" color=${ui.textMuted}>Keine Tagesdaten im Zeitraum.<//>` : null}
+                      <//>
+                    <//>
+
+                    <${Chakra.Box} border="1px solid" borderColor=${ui.lineColor} borderRadius="12px" p="3">
+                      <${Chakra.Text} fontSize="sm" fontWeight="700" mb="2" color=${ui.textPrimary}>Senderverteilung<//>
+                      <${Chakra.VStack} align="stretch" spacing="2" maxH="240px" overflowY="auto" className="horizon-scroll">
+                        ${detailSummary.topStations.map((station) => {
+                          const max = Math.max(1, ...(detailSummary.topStations || []).map((x) => Number(x.plays || 0)));
+                          const value = Number(station.plays || 0);
+                          return html`
+                            <${Chakra.Box} key=${station.station_id || station.station_name}>
+                              <${Chakra.HStack} justify="space-between" mb="1">
+                                <${Chakra.Text} fontSize="xs" color=${ui.textMuted} noOfLines=${1}>${station.station_name || station.station_id}<//>
+                                <${Chakra.Text} fontSize="xs" fontWeight="700" color=${ui.textPrimary}>${formatNumber(value)}<//>
+                              <//>
+                              <${Chakra.Progress} value=${Math.round((value / max) * 100)} colorScheme="purple" size="sm" borderRadius="999px" />
+                            <//>
+                          `;
+                        })}
+                        ${detailSummary.topStations.length === 0 ? html`<${Chakra.Text} fontSize="xs" color=${ui.textMuted}>Keine Senderdaten im Zeitraum.<//>` : null}
+                      <//>
+                    <//>
+                  <//>
+                `}
+              <//>
+            <//>
+
             <${PanelCard} title="Power Admin: Merge" p="4">
               <${Chakra.VStack} align="stretch" spacing="3">
                 <${Chakra.FormControl}>
@@ -360,6 +530,16 @@ function StatCard({ label, value, compact = false }) {
       <${Chakra.Text} fontSize=${compact ? 'sm' : '2xl'} fontWeight="800" color=${ui.textPrimary} noOfLines=${compact ? 2 : undefined}>
         ${value}
       <//>
+    <//>
+  `;
+}
+
+function MiniMetric({ label, value, colorScheme = 'blue' }) {
+  const ui = useUiColors();
+  return html`
+    <${Chakra.Box} border="1px solid" borderColor=${ui.lineColor} borderRadius="10px" px="3" py="2">
+      <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${label}<//>
+      <${Chakra.Badge} colorScheme=${colorScheme} mt="1" borderRadius="8px" px="2" py="1">${value}<//>
     <//>
   `;
 }
