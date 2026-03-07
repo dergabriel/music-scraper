@@ -1,5 +1,26 @@
 :root {
   font-size: 17px;
+  --chart-axis: #6f879d;
+  --chart-grid: rgba(111, 135, 157, 0.22);
+  --chart-text: #1e2a36;
+  --chart-series-primary: #0ea5a4;
+  --chart-series-primary-fill: rgba(14, 165, 164, 0.16);
+  --chart-series-accent: #f59e0b;
+  --chart-series-secondary: #14b8a6;
+  --chart-tooltip-bg: #ffffff;
+  --chart-tooltip-border: rgba(111, 135, 157, 0.45);
+}
+
+[data-theme='dark'] {
+  --chart-axis: #8ea4b8;
+  --chart-grid: rgba(142, 164, 184, 0.2);
+  --chart-text: #e6edf4;
+  --chart-series-primary: #2dd4bf;
+  --chart-series-primary-fill: rgba(45, 212, 191, 0.18);
+  --chart-series-accent: #fbbf24;
+  --chart-series-secondary: #22d3ee;
+  --chart-tooltip-bg: #111b24;
+  --chart-tooltip-border: rgba(142, 164, 184, 0.42);
 }
 
 body {
@@ -196,11 +217,12 @@ body {
 }
 
 #tracksTable tbody tr:hover {
-  background: color-mix(in srgb, var(--bs-primary-bg-subtle) 55%, transparent);
+  background: color-mix(in srgb, var(--bs-primary-bg-subtle) 65%, transparent);
 }
 
 #tracksTable tbody tr.selected {
-  background: color-mix(in srgb, var(--bs-warning-bg-subtle) 60%, transparent);
+  background: color-mix(in srgb, var(--bs-warning-bg-subtle) 70%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--bs-warning) 40%, transparent);
 }
 
 #tracksTable td {
@@ -240,15 +262,17 @@ body {
   border-radius: 0.6rem;
   padding: 0.45rem;
   position: relative;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
+  container-type: inline-size;
 }
 
 .chart svg {
   width: 100%;
   height: auto;
   display: block;
-  min-width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chart-empty {
@@ -303,7 +327,7 @@ body {
 }
 
 .chart svg text {
-  fill: var(--bs-body-color);
+  fill: var(--chart-text);
 }
 
 .chart svg circle,
@@ -318,9 +342,9 @@ body {
   transform: translate3d(0, 0, 0);
   padding: 0.2rem 0.45rem;
   border-radius: 0.4rem;
-  border: 1px solid var(--bs-border-color);
-  background: var(--bs-body-bg);
-  color: var(--bs-body-color);
+  border: 1px solid var(--chart-tooltip-border);
+  background: var(--chart-tooltip-bg);
+  color: var(--chart-text);
   font-size: 0.82rem;
   line-height: 1.2;
   pointer-events: none;

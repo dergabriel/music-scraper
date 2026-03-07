@@ -12,6 +12,7 @@ const StationSchema = z.object({
   fetcher: z.enum(['http', 'playwright']).default('http'),
   timezone: z.string().min(1).default('Europe/Berlin'),
   enforce_one_play_per_minute: z.boolean().optional().default(false),
+  min_play_gap_seconds: z.number().int().min(0).optional().default(0),
   min_daily_hours: z.number().int().min(1).max(24).optional().default(20),
   min_daily_plays: z.number().int().min(0).optional().default(24)
 });

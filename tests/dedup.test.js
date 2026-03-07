@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { openDb, upsertStation, insertPlayIgnore } from '../src/db.js';
+import { openDb, upsertStation, insertPlayIgnore, dedupeStationByMinGapSeconds } from '../src/db.js';
 import { normalizeArtistTitle } from '../src/normalize.js';
 import {
   buildFallbackSongKey,
@@ -143,5 +143,50 @@ describe('cooldown dedup', () => {
     expect(a).toBe(b);
     expect(a).toBe(c);
   });
-});
 
+  it('can cleanup a station by minimum global play gap', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-dedup-gap-'));
+    const dbPath = path.join(tmp, 'dedup.sqlite');
+    const db = openDb(dbPath);
+    upsertStation(db, {
+      id: 'station_gap',
+      name: 'Station Gap',
+      playlist_url: 'https://example.test',
+      timezone: 'Europe/Berlin'
+    });
+
+    addCountedPlay(db, {
+      stationId: 'station_gap',
+      playedAtUtcIso: '2026-03-04T10:00:00.000Z',
+      artistRaw: 'Artist A',
+      titleRaw: 'Song 1'
+    });
+    addCountedPlay(db, {
+      stationId: 'station_gap',
+      playedAtUtcIso: '2026-03-04T10:01:00.000Z',
+      artistRaw: 'Artist B',
+      titleRaw: 'Song 2'
+    });
+    addCountedPlay(db, {
+      stationId: 'station_gap',
+      playedAtUtcIso: '2026-03-04T10:02:00.000Z',
+      artistRaw: 'Artist C',
+      titleRaw: 'Song 3'
+    });
+    addCountedPlay(db, {
+      stationId: 'station_gap',
+      playedAtUtcIso: '2026-03-04T10:05:00.000Z',
+      artistRaw: 'Artist D',
+      titleRaw: 'Song 4'
+    });
+
+    const result = dedupeStationByMinGapSeconds(db, 'station_gap', 150);
+    db.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.before).toBe(4);
+    expect(result.after).toBe(2);
+    expect(result.removed).toBe(2);
+    expect(result.minGapSeconds).toBe(150);
+  });
+});

@@ -13,6 +13,7 @@ stations:
     fetcher: "http"
     timezone: "Europe/Berlin"
     enforce_one_play_per_minute: true
+    min_play_gap_seconds: 150
 
   - id: "1live"
     name: "1Live"

@@ -4,6 +4,14 @@ import {
   shiftBerlinIsoDate
 } from './date-berlin.js';
 import {
+  fillDailySeriesRange,
+  formatPlays,
+  formatSeriesPeriod,
+  toCumulativeSeries
+} from './charts.base.js';
+import { renderLineChart, renderSeriesByStationChart } from './charts.line.js';
+import { renderBarChart, renderDailyBarChart } from './charts.bar.js';
+import {
   React,
   createRoot,
   Chakra,
@@ -43,6 +51,63 @@ function dayCount(fromIso, toIso) {
   const end = Date.parse(`${toIso}T12:00:00.000Z`);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 1;
   return Math.max(1, Math.round((end - start) / (24 * 60 * 60 * 1000)) + 1);
+}
+
+const CHART_COLOR_PALETTE = [
+  '#3b82f6',
+  '#10b981',
+  '#f59e0b',
+  '#8b5cf6',
+  '#ef4444',
+  '#14b8a6',
+  '#f97316',
+  '#0ea5e9'
+];
+
+function toFixedLocale(value, digits = 2) {
+  const num = Number(value || 0);
+  return num.toLocaleString('de-DE', { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+function buildDailyTrackTrendRows(seriesByStation, panelActiveSeries) {
+  const stationRows = Array.isArray(seriesByStation?.stations) ? seriesByStation.stations : [];
+  const panelRows = Array.isArray(panelActiveSeries) ? panelActiveSeries : [];
+  const allPeriods = new Set();
+
+  stationRows.forEach((station) => {
+    (station.series || []).forEach((row) => {
+      if (row?.period) allPeriods.add(row.period);
+    });
+  });
+  panelRows.forEach((row) => {
+    if (row?.period) allPeriods.add(row.period);
+  });
+
+  const periods = Array.from(allPeriods).sort((a, b) => a.localeCompare(b));
+  const activeByPeriod = new Map(panelRows.map((row) => [row.period, Number(row.active_senders || 0)]));
+
+  return periods.map((period) => {
+    let rawPlays = 0;
+    stationRows.forEach((station) => {
+      const point = (station.series || []).find((row) => row.period === period);
+      rawPlays += Number(point?.plays || 0);
+    });
+    const activeSenders = Number(activeByPeriod.get(period) || 0);
+    const normalizedPlays = activeSenders > 0 ? rawPlays / activeSenders : 0;
+    return {
+      period,
+      rawPlays,
+      activeSenders,
+      normalizedPlays
+    };
+  });
+}
+
+function pickTopStationIds(stations, limit = 5) {
+  return (Array.isArray(stations) ? stations : [])
+    .slice(0, Math.max(1, limit))
+    .map((row) => row.stationId)
+    .filter(Boolean);
 }
 
 function buildDayStationMatrix(seriesByStation) {
@@ -323,6 +388,183 @@ function SenderDayHeatmap({ matrix }) {
   `;
 }
 
+function GroupedDayStationBars({ periods, stations, selectedStationIds }) {
+  const ui = useUiColors();
+  const selectedStations = (Array.isArray(stations) ? stations : []).filter((row) => selectedStationIds.includes(row.stationId));
+  const visiblePeriods = (Array.isArray(periods) ? periods : []).slice(-45);
+
+  if (!visiblePeriods.length || !selectedStations.length) {
+    return html`<${Chakra.Text} color=${ui.textMuted}>Keine Balkendaten für die aktuelle Auswahl.<//>`;
+  }
+
+  const seriesMap = new Map(selectedStations.map((station) => {
+    const map = new Map((station.series || []).map((row) => [row.period, Number(row.plays || 0)]));
+    return [station.stationId, map];
+  }));
+
+  const values = [];
+  visiblePeriods.forEach((period) => {
+    selectedStations.forEach((station) => {
+      values.push(Number(seriesMap.get(station.stationId)?.get(period) || 0));
+    });
+  });
+
+  const maxValue = Math.max(1, ...values);
+  const width = Math.max(760, visiblePeriods.length * Math.max(28, (selectedStations.length * 11) + 10));
+  const height = 320;
+  const margin = { top: 20, right: 18, bottom: 54, left: 46 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const groupWidth = plotWidth / visiblePeriods.length;
+  const barGap = 2;
+  const rawBarWidth = (groupWidth - 6 - ((selectedStations.length - 1) * barGap)) / selectedStations.length;
+  const barWidth = Math.max(3, Math.min(16, rawBarWidth));
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(maxValue * ratio));
+  const xStep = Math.max(1, Math.floor(visiblePeriods.length / 8));
+
+  return html`
+    <${Chakra.VStack} align="stretch" spacing="3">
+      <${Chakra.Box} overflowX="auto">
+        <svg viewBox=${`0 0 ${width} ${height}`} style=${{ width: '100%', minWidth: `${Math.min(width, 1300)}px`, height: 'auto' }}>
+          <line x1=${margin.left} y1=${margin.top + plotHeight} x2=${margin.left + plotWidth} y2=${margin.top + plotHeight} stroke=${ui.lineColor} stroke-width="1.2"></line>
+          <line x1=${margin.left} y1=${margin.top} x2=${margin.left} y2=${margin.top + plotHeight} stroke=${ui.lineColor} stroke-width="1.2"></line>
+
+          ${yTicks.map((tick) => {
+            const y = margin.top + plotHeight - ((tick / maxValue) * plotHeight);
+            return html`
+              <g key=${`y-${tick}`}>
+                <line x1=${margin.left} y1=${y} x2=${margin.left + plotWidth} y2=${y} stroke=${ui.lineColor} stroke-dasharray="4 4" stroke-width="1"></line>
+                <text x=${margin.left - 8} y=${y + 4} text-anchor="end" font-size="11" fill=${ui.textMuted}>${formatNumber(tick)}</text>
+              </g>
+            `;
+          })}
+
+          ${visiblePeriods.map((period, periodIndex) => {
+            const groupX = margin.left + (periodIndex * groupWidth) + 3;
+            const showLabel = periodIndex % xStep === 0 || periodIndex === visiblePeriods.length - 1;
+            return html`
+              <g key=${`group-${period}`}>
+                ${selectedStations.map((station, stationIndex) => {
+                  const value = Number(seriesMap.get(station.stationId)?.get(period) || 0);
+                  const barHeight = value > 0 ? (value / maxValue) * plotHeight : 0;
+                  const x = groupX + (stationIndex * (barWidth + barGap));
+                  const y = margin.top + plotHeight - barHeight;
+                  const fill = CHART_COLOR_PALETTE[stationIndex % CHART_COLOR_PALETTE.length];
+                  return html`
+                    <rect
+                      key=${`${period}-${station.stationId}`}
+                      x=${x}
+                      y=${y}
+                      width=${barWidth}
+                      height=${Math.max(0, barHeight)}
+                      fill=${fill}
+                      rx="2"
+                      ry="2"
+                    >
+                      <title>${`${station.stationName} | ${dayLabel(period)} | ${formatNumber(value)} Plays`}</title>
+                    </rect>
+                  `;
+                })}
+                ${showLabel
+                  ? html`<text x=${groupX + ((selectedStations.length * (barWidth + barGap)) / 2)} y=${margin.top + plotHeight + 16} text-anchor="middle" font-size="10" fill=${ui.textMuted}>${dayLabel(period)}</text>`
+                  : null}
+              </g>
+            `;
+          })}
+
+          <text x=${margin.left + (plotWidth / 2)} y=${height - 8} text-anchor="middle" font-size="11" fill=${ui.textMuted}>Tag</text>
+          <text x="14" y=${margin.top + (plotHeight / 2)} transform=${`rotate(-90 14 ${margin.top + (plotHeight / 2)})`} text-anchor="middle" font-size="11" fill=${ui.textMuted}>Plays</text>
+        </svg>
+      <//>
+
+      <${Chakra.Wrap} spacing="2">
+        ${selectedStations.map((station, index) => html`
+          <${Chakra.Tag} key=${station.stationId} size="sm" borderRadius="999px" variant="subtle">
+            <${Chakra.TagLeftIcon} boxSize="10px" color=${CHART_COLOR_PALETTE[index % CHART_COLOR_PALETTE.length]} as=${Icons.StarIcon} />
+            <${Chakra.TagLabel}>${station.stationName}<//>
+          <//>
+        `)}
+      <//>
+    <//>
+  `;
+}
+
+function TrackTrendLineChart({ rows, mode = 'raw' }) {
+  const ui = useUiColors();
+  const points = Array.isArray(rows) ? rows : [];
+  if (!points.length) {
+    return html`<${Chakra.Text} color=${ui.textMuted}>Keine Trenddaten im gewählten Zeitraum.<//>`;
+  }
+
+  const axisColor = 'var(--chart-axis)';
+  const gridColor = 'var(--chart-grid)';
+  const textColor = 'var(--chart-text)';
+  const values = points.map((row) => (mode === 'normalized' ? Number(row.normalizedPlays || 0) : Number(row.rawPlays || 0)));
+  const maxValue = Math.max(1, ...values);
+  const width = Math.max(760, points.length * 30);
+  const height = 260;
+  const margin = { top: 16, right: 16, bottom: 44, left: 48 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const stepX = points.length > 1 ? plotWidth / (points.length - 1) : plotWidth;
+  const xStep = Math.max(1, Math.floor(points.length / 8));
+
+  const path = points.map((row, index) => {
+    const value = mode === 'normalized' ? Number(row.normalizedPlays || 0) : Number(row.rawPlays || 0);
+    const x = margin.left + (index * stepX);
+    const y = margin.top + plotHeight - ((value / maxValue) * plotHeight);
+    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
+  }).join(' ');
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => maxValue * ratio);
+  const lineColor = mode === 'normalized' ? 'var(--chart-series-secondary)' : 'var(--chart-series-primary)';
+
+  return html`
+    <${Chakra.VStack} align="stretch" spacing="2">
+      <${Chakra.Box} overflowX="auto">
+        <svg viewBox=${`0 0 ${width} ${height}`} style=${{ width: '100%', minWidth: `${Math.min(width, 1300)}px`, height: 'auto' }}>
+          <line x1=${margin.left} y1=${margin.top + plotHeight} x2=${margin.left + plotWidth} y2=${margin.top + plotHeight} stroke=${axisColor} stroke-width="1.2"></line>
+          <line x1=${margin.left} y1=${margin.top} x2=${margin.left} y2=${margin.top + plotHeight} stroke=${axisColor} stroke-width="1.2"></line>
+
+          ${yTicks.map((tick, index) => {
+            const y = margin.top + plotHeight - ((tick / maxValue) * plotHeight);
+            const label = mode === 'normalized' ? toFixedLocale(tick, 2) : formatNumber(Math.round(tick));
+            return html`
+              <g key=${`trend-y-${index}`}>
+                <line x1=${margin.left} y1=${y} x2=${margin.left + plotWidth} y2=${y} stroke=${gridColor} stroke-dasharray="4 4" stroke-width="1"></line>
+                <text x=${margin.left - 8} y=${y + 4} text-anchor="end" font-size="11" fill=${textColor}>${label}</text>
+              </g>
+            `;
+          })}
+
+          <path d=${path} fill="none" stroke=${lineColor} stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"></path>
+          ${points.map((row, index) => {
+            const value = mode === 'normalized' ? Number(row.normalizedPlays || 0) : Number(row.rawPlays || 0);
+            const x = margin.left + (index * stepX);
+            const y = margin.top + plotHeight - ((value / maxValue) * plotHeight);
+            const showLabel = index % xStep === 0 || index === points.length - 1;
+            return html`
+              <g key=${`trend-${row.period}`}>
+                <circle cx=${x} cy=${y} r="3.4" fill=${lineColor}>
+                  <title>${`${dayLabel(row.period)} | Roh: ${formatNumber(row.rawPlays)} | Panel: ${toFixedLocale(row.normalizedPlays, 2)} | Aktive Sender: ${formatNumber(row.activeSenders)}`}</title>
+                </circle>
+                ${showLabel
+                  ? html`<text x=${x} y=${margin.top + plotHeight + 16} text-anchor="middle" font-size="10" fill=${textColor}>${dayLabel(row.period)}</text>`
+                  : null}
+              </g>
+            `;
+          })}
+
+          <text x=${margin.left + (plotWidth / 2)} y=${height - 8} text-anchor="middle" font-size="11" fill=${textColor}>Tag</text>
+          <text x="14" y=${margin.top + (plotHeight / 2)} transform=${`rotate(-90 14 ${margin.top + (plotHeight / 2)})`} text-anchor="middle" font-size="11" fill=${textColor}>
+            ${mode === 'normalized' ? 'Plays je aktivem Sender' : 'Roh-Plays'}
+          </text>
+        </svg>
+      <//>
+    <//>
+  `;
+}
+
 function BucketTrendCompact({ rows }) {
   const ui = useUiColors();
   if (!rows.length) {
@@ -341,6 +583,111 @@ function BucketTrendCompact({ rows }) {
           <${Chakra.Progress} value=${Math.round((Number(row.plays || 0) / max) * 100)} colorScheme="purple" size="sm" borderRadius="999px" />
         <//>
       `)}
+    <//>
+  `;
+}
+
+function LegacyStatsCharts({
+  selectedTrack,
+  from,
+  to,
+  bucket,
+  cumulativeSeries,
+  bucketSeries,
+  stationsByPlays,
+  stationsSeries
+}) {
+  const ui = useUiColors();
+  const cumulativeRef = React.useRef(null);
+  const periodRef = React.useRef(null);
+  const stationBarRef = React.useRef(null);
+  const stationSeriesRef = React.useRef(null);
+
+  const renderAllCharts = React.useCallback(() => {
+    const cumulativeNode = cumulativeRef.current;
+    const periodNode = periodRef.current;
+    const stationBarNode = stationBarRef.current;
+    const stationSeriesNode = stationSeriesRef.current;
+    if (!cumulativeNode || !periodNode || !stationBarNode || !stationSeriesNode) return;
+
+    const cumulativeRows = toCumulativeSeries(Array.isArray(cumulativeSeries) ? cumulativeSeries : []);
+    const cumulativeStart = Number(cumulativeRows[0]?.plays || 0);
+    const cumulativeEnd = Number(cumulativeRows[cumulativeRows.length - 1]?.plays || 0);
+    renderLineChart(cumulativeNode, cumulativeRows, bucket, {
+      showArea: true,
+      stats: [
+        { label: 'Stand', value: `${formatPlays(cumulativeEnd)} Einsätze` },
+        { label: 'Zuwachs', value: `+${formatPlays(Math.max(0, cumulativeEnd - cumulativeStart))}` },
+        { label: 'Punkte', value: formatPlays(cumulativeRows.length) }
+      ]
+    });
+
+    const rawPeriodRows = Array.isArray(bucketSeries) ? bucketSeries : [];
+    const normalizedPeriodRows = bucket === 'day'
+      ? fillDailySeriesRange(rawPeriodRows, from, to)
+      : rawPeriodRows;
+    const totalInRange = normalizedPeriodRows.reduce((sum, row) => sum + Number(row.plays || 0), 0);
+    const avgInRange = normalizedPeriodRows.length ? totalInRange / normalizedPeriodRows.length : 0;
+    const peakPeriod = normalizedPeriodRows.reduce((best, row) => {
+      const plays = Number(row.plays || 0);
+      if (!best || plays > best.plays) return { period: row.period, plays };
+      return best;
+    }, null);
+    renderDailyBarChart(periodNode, normalizedPeriodRows, bucket, {
+      stats: [
+        { label: 'Zeiträume', value: formatPlays(normalizedPeriodRows.length) },
+        {
+          label: bucket === 'day' ? 'Ø Einsätze/Tag' : 'Ø Einsätze/Zeitraum',
+          value: avgInRange.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+        },
+        {
+          label: 'Spitze',
+          value: peakPeriod ? `${formatSeriesPeriod(peakPeriod.period, bucket, true)} (${formatPlays(peakPeriod.plays)})` : '-'
+        }
+      ]
+    });
+
+    renderBarChart(stationBarNode, Array.isArray(stationsByPlays) ? stationsByPlays : []);
+    renderSeriesByStationChart(stationSeriesNode, Array.isArray(stationsSeries) ? stationsSeries : [], 'day');
+  }, [bucket, bucketSeries, cumulativeSeries, from, stationsByPlays, stationsSeries, to]);
+
+  React.useEffect(() => {
+    renderAllCharts();
+  }, [renderAllCharts]);
+
+  React.useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      window.requestAnimationFrame(renderAllCharts);
+    });
+    [cumulativeRef.current, periodRef.current, stationBarRef.current, stationSeriesRef.current]
+      .filter(Boolean)
+      .forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [renderAllCharts]);
+
+  if (!selectedTrack) {
+    return html`<${Chakra.Text} color=${ui.textMuted}>Bitte einen Track auswählen, um die Statistik zu sehen.<//>`;
+  }
+
+  return html`
+    <${Chakra.VStack} align="stretch" spacing="4">
+      <${Chakra.Box}>
+        <${Chakra.Text} fontSize="sm" color=${ui.textMuted} mb="2">Gesamt-Plays (kumuliert)<//>
+        <div className="legacy-chart" ref=${cumulativeRef}></div>
+      <//>
+      <${Chakra.Box}>
+        <${Chakra.Text} fontSize="sm" color=${ui.textMuted} mb="2">Plays pro Zeitraum<//>
+        <div className="legacy-chart" ref=${periodRef}></div>
+      <//>
+      <${Chakra.Box}>
+        <${Chakra.Text} fontSize="sm" color=${ui.textMuted} mb="2">Plays je Sender<//>
+        <div className="legacy-chart legacy-chart-tall" ref=${stationBarRef}></div>
+      <//>
+      <${Chakra.Box}>
+        <${Chakra.Text} fontSize="sm" color=${ui.textMuted} mb="2">Verlauf pro Sender<//>
+        <div className="legacy-chart legacy-chart-tall" ref=${stationSeriesRef}></div>
+      <//>
     <//>
   `;
 }
@@ -369,6 +716,9 @@ function DashboardApp() {
   const [totals, setTotals] = React.useState(null);
   const [trend, setTrend] = React.useState(null);
   const [seriesByStation, setSeriesByStation] = React.useState(null);
+  const [stationsByPlays, setStationsByPlays] = React.useState([]);
+  const [cumulativeSeries, setCumulativeSeries] = React.useState([]);
+  const [activeSenderSeries, setActiveSenderSeries] = React.useState([]);
   const [bucketSeries, setBucketSeries] = React.useState([]);
 
   const debouncedSearch = useDebouncedValue(search, 250);
@@ -385,6 +735,10 @@ function DashboardApp() {
 
   const effectiveTo = includeToday ? berlinTodayIsoDate() : to;
   const matrix = React.useMemo(() => buildDayStationMatrix(seriesByStation), [seriesByStation]);
+  const dailyTrendRows = React.useMemo(
+    () => buildDailyTrackTrendRows(seriesByStation, activeSenderSeries),
+    [seriesByStation, activeSenderSeries]
+  );
 
   const trackSummary = React.useMemo(() => {
     const totalPlays = tracks.reduce((sum, row) => sum + Number(row.total_plays || 0), 0);
@@ -406,6 +760,9 @@ function DashboardApp() {
       setTotals(null);
       setTrend(null);
       setSeriesByStation(null);
+      setStationsByPlays([]);
+      setCumulativeSeries([]);
+      setActiveSenderSeries([]);
       setBucketSeries([]);
       return;
     }
@@ -414,19 +771,28 @@ function DashboardApp() {
     setErrorText('');
     try {
       const detailParams = new URLSearchParams({ from, to: effectiveTo });
-      const stationParams = new URLSearchParams({ from, to: effectiveTo, bucket: 'day', limit: '8' });
+      const stationParams = new URLSearchParams({ from, to: effectiveTo, bucket: 'day', limit: '12' });
+      const stationsByPlaysParams = new URLSearchParams({ from, to: effectiveTo });
       const bucketParams = new URLSearchParams({ from, to: effectiveTo, bucket });
+      const cumulativeParams = new URLSearchParams({ from: '2000-01-01', to: effectiveTo, bucket });
+      const panelParams = new URLSearchParams({ from, to: effectiveTo, minPlays: '50' });
 
-      const [totalsRes, trendRes, stationRes, bucketRes] = await Promise.all([
+      const [totalsRes, trendRes, stationRes, stationsByPlaysRes, bucketRes, cumulativeRes, panelRes] = await Promise.all([
         apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/totals?${detailParams.toString()}`),
         apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/trend`),
         apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/series-by-station?${stationParams.toString()}`),
-        apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/series?${bucketParams.toString()}`)
+        apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/stations?${stationsByPlaysParams.toString()}`),
+        apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/series?${bucketParams.toString()}`),
+        apiFetch(`/api/tracks/${encodeURIComponent(trackKey)}/series?${cumulativeParams.toString()}`),
+        apiFetch(`/api/panel/active-senders?${panelParams.toString()}`)
       ]);
 
       setTotals(totalsRes || null);
       setTrend(trendRes || null);
       setSeriesByStation(stationRes || null);
+      setStationsByPlays(Array.isArray(stationsByPlaysRes?.stations) ? stationsByPlaysRes.stations : []);
+      setCumulativeSeries(Array.isArray(cumulativeRes?.series) ? cumulativeRes.series : []);
+      setActiveSenderSeries(Array.isArray(panelRes?.series) ? panelRes.series : []);
       setBucketSeries(Array.isArray(bucketRes?.series) ? bucketRes.series : []);
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : String(error));
@@ -522,13 +888,13 @@ function DashboardApp() {
 
         <${PanelCard}
           title="So liest du das Dashboard"
-          subtitle="1) Track wählen · 2) Zeitraum setzen · 3) Score und Heatmap interpretieren"
+          subtitle="1) Track wählen · 2) Zeitraum setzen · 3) Klassische Statistik-Charts lesen"
           right=${html`<${Chakra.Badge} colorScheme="blue" borderRadius="999px" px="3" py="1">Einheitliche Ansicht<//>`}
         >
           <${Chakra.SimpleGrid} columns=${{ base: 1, md: 3 }} spacing="3">
             <${MiniKpi} label="Score" value="Wie stark der Song im Panel performt" />
-            <${MiniKpi} label="Heatmap" value="Plays pro Sender pro Tag" />
-            <${MiniKpi} label="Sofort lesbar" value="Wenige klare Metriken statt vieler Charts" />
+            <${MiniKpi} label="Klassische Charts" value="Kumuliert, Zeitraum, Sender, Senderverlauf" />
+            <${MiniKpi} label="Sofort lesbar" value="Neue Optik mit den alten Statistikansichten" />
           <//>
         <//>
 
@@ -664,10 +1030,39 @@ function DashboardApp() {
             <//>
 
             <${PanelCard}
-              title="Wie oft läuft der Song pro Sender pro Tag?"
-              subtitle="Heatmap mit klaren Zahlen je Tag und Sender (neuester Tag zuerst)"
+              title="Klassische Statistikansichten"
+              subtitle="Die gewohnten Charts mit klaren Sender-Play-Zahlen im neuen Design"
             >
-              <${SenderDayHeatmap} matrix=${matrix} />
+              <${LegacyStatsCharts}
+                selectedTrack=${selectedTrack}
+                from=${from}
+                to=${effectiveTo}
+                bucket=${bucket}
+                cumulativeSeries=${cumulativeSeries}
+                bucketSeries=${bucketSeries}
+                stationsByPlays=${stationsByPlays}
+                stationsSeries=${seriesByStation?.stations || []}
+              />
+            <//>
+
+            <${PanelCard}
+              title="Trend Rohsumme vs. panelbereinigt"
+              subtitle="Zusatzinfo: Roh = absolute Plays | Bereinigt = Plays pro aktivem Sender je Tag"
+            >
+              <${Chakra.Tabs} variant="soft-rounded" colorScheme="blue" size="sm">
+                <${Chakra.TabList}>
+                  <${Chakra.Tab}>Rohsumme<//>
+                  <${Chakra.Tab}>Panelbereinigt<//>
+                <//>
+                <${Chakra.TabPanels}>
+                  <${Chakra.TabPanel} px="0" pb="0">
+                    <${TrackTrendLineChart} rows=${dailyTrendRows} mode="raw" />
+                  <//>
+                  <${Chakra.TabPanel} px="0" pb="0">
+                    <${TrackTrendLineChart} rows=${dailyTrendRows} mode="normalized" />
+                  <//>
+                <//>
+              <//>
             <//>
 
             ${EXTRA_CHARTS_ENABLED ? html`

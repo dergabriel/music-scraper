@@ -19,7 +19,7 @@ import {
   runPromoMarkerMaintenance,
   runReleaseDateBackfillMaintenance
 } from './services.js';
-import { openDb, dedupeStationToOnePlayPerMinute } from './db.js';
+import { openDb, dedupeStationToOnePlayPerMinute, dedupeStationByMinGapSeconds } from './db.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
@@ -301,10 +301,14 @@ program
   .command('cleanup-station')
   .requiredOption('--station-id <id>', 'Station id, e.g. dlf_nova')
   .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
+  .option('--min-gap-seconds <number>', 'Minimum seconds between two counted plays', '60')
+  .option('--one-per-minute', 'Legacy mode: keep only one play per minute')
   .action((opts) => {
     try {
       const db = openDb(opts.db);
-      const result = dedupeStationToOnePlayPerMinute(db, opts.stationId);
+      const result = opts.onePerMinute
+        ? dedupeStationToOnePlayPerMinute(db, opts.stationId)
+        : dedupeStationByMinGapSeconds(db, opts.stationId, Number(opts.minGapSeconds));
       db.close();
       logger.info({ stationId: opts.stationId, ...result }, 'station cleanup finished');
     } catch (err) {

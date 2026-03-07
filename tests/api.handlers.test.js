@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import pino from 'pino';
 import { openDb, upsertStation, insertPlayIgnore, upsertTrackMetadata } from '../src/db.js';
 import { normalizeArtistTitle } from '../src/normalize.js';
-import { createApiApp, createApiHandlers } from '../src/api.js';
+import { createApiApp, createApiHandlers, parseRange } from '../src/api.js';
 
 function mkTmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'music-scraper-api-test-'));
@@ -42,6 +42,13 @@ function addPlay(db, { stationId, playedAtUtcIso, artistRaw, titleRaw }) {
 }
 
 describe('api handlers', () => {
+  it('keeps parseRange stable for valid and invalid inputs', () => {
+    const parsed = parseRange('2026-02-01', '2026-02-03');
+    expect(parsed.startUtcIso).toMatch(/2026-01-31T23:00:00/);
+    expect(parsed.endUtcIso).toMatch(/2026-02-03T23:00:00/);
+    expect(() => parseRange('2026/02/01', '2026-02-03')).toThrow('Invalid from/to date range. Use YYYY-MM-DD.');
+  });
+
   it('serves all core endpoints and daily evaluation', async () => {
     const tmp = mkTmp();
     const dbPath = path.join(tmp, 'api.sqlite');
@@ -155,6 +162,7 @@ describe('api handlers', () => {
     expect(routePaths).toContain('/new-titles');
     expect(routePaths).toContain('/api/tracks');
     expect(routePaths).toContain('/api/new-titles');
+    expect(routePaths).toContain('/api/panel/active-senders');
     expect(routePaths).toContain('/api/tracks/:trackKey/trend');
     expect(routePaths).toContain('/api/tracks/:trackKey/lifecycle');
     expect(routePaths).toContain('/api/tracks/:trackKey/station-divergence');
@@ -170,6 +178,7 @@ describe('api handlers', () => {
     expect(docsRes.statusCode).toBe(200);
     expect(Array.isArray(docsRes.body.endpoints)).toBe(true);
     expect(docsRes.body.endpoints.some((x) => x.includes('/api/tracks?'))).toBe(true);
+    expect(docsRes.body.endpoints.some((x) => x.includes('/api/panel/active-senders'))).toBe(true);
 
     const stationsRes = mkRes();
     h.stations({}, stationsRes);
@@ -239,6 +248,18 @@ describe('api handlers', () => {
     expect(seriesByStationRes.statusCode).toBe(200);
     expect(Array.isArray(seriesByStationRes.body.stations)).toBe(true);
     expect(seriesByStationRes.body.stations.length).toBeGreaterThan(0);
+
+    const panelRes = mkRes();
+    h.panelActiveSenders(
+      {
+        query: { from: '2026-02-23', to: '2026-02-24', minPlays: '1' }
+      },
+      panelRes
+    );
+    expect(panelRes.statusCode).toBe(200);
+    expect(Array.isArray(panelRes.body.series)).toBe(true);
+    expect(panelRes.body.series.length).toBe(2);
+    expect(panelRes.body.series.every((row) => Number(row.active_senders) >= 1)).toBe(true);
 
     const totalsRes = mkRes();
     h.trackTotals({ params: { trackKey }, query: { from: '2026-01-01', to: '2026-12-31' } }, totalsRes);
@@ -347,9 +368,14 @@ describe('api handlers', () => {
 
     const verifyDb = openDb(dbPath);
     const dailyRows = verifyDb.prepare('select count(*) as c from daily_station_stats where date_berlin = ?').get('2026-02-23');
+    const playIndexes = verifyDb.prepare("select name from pragma_index_list('plays')").all().map((row) => row.name);
     verifyDb.close();
     expect(dailyRows.c).toBe(1);
+    expect(playIndexes).toContain('idx_plays_track_played_at');
+    expect(playIndexes).toContain('idx_plays_track_station_played_at');
 
+    h.__close?.();
+    app.locals?.closeApiDb?.();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

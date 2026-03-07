@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import pino from 'pino';
 import { createRequire } from 'node:module';
 import { DateTime } from 'luxon';
+import { z } from 'zod';
 import {
   openDb,
   listStations,
@@ -25,21 +26,79 @@ import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
 import { TrackVerifier } from './trackVerifier.js';
 
-const BUCKETS = new Set(['day', 'week', 'month', 'year']);
 const require = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
+const ACTIVE_API_DBS = new Set();
+let API_DB_HOOKS_REGISTERED = false;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATE_SCHEMA = z.string().regex(ISO_DATE_RE, 'Invalid from/to date range. Use YYYY-MM-DD.');
+const BUCKET_SCHEMA = z.enum(['day', 'week', 'month', 'year']);
 
 function safeQueryValue(value) {
   if (Array.isArray(value)) return value[0];
   return value;
 }
 
+function normalizeQuery(query) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(query || {})) {
+    normalized[key] = safeQueryValue(value);
+  }
+  return normalized;
+}
+
+function parseIntQuery(value, { fallback, min, max, fieldName = 'value' }) {
+  if (value == null || value === '') return fallback;
+  const parsed = z.coerce.number().int({ message: `${fieldName} must be an integer.` }).safeParse(value);
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message || `Invalid ${fieldName}.`);
+  return Math.max(min, Math.min(max, parsed.data));
+}
+
+function parseFloatQuery(value, { fallback, min, max, fieldName = 'value' }) {
+  if (value == null || value === '') return fallback;
+  const parsed = z.coerce.number({ message: `${fieldName} must be numeric.` }).safeParse(value);
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message || `Invalid ${fieldName}.`);
+  return Math.max(min, Math.min(max, parsed.data));
+}
+
+function parseBucket(value, fallback = 'day') {
+  const parsed = BUCKET_SCHEMA.safeParse(String(value ?? fallback));
+  if (!parsed.success) throw new Error('Invalid bucket. Use day|week|month|year.');
+  return parsed.data;
+}
+
+function registerApiDbHooks(logger) {
+  if (API_DB_HOOKS_REGISTERED) return;
+  API_DB_HOOKS_REGISTERED = true;
+  const closeAll = () => {
+    for (const db of ACTIVE_API_DBS) {
+      try {
+        db.close();
+      } catch (error) {
+        logger?.warn?.({ err: error instanceof Error ? error.message : String(error) }, 'failed to close api db');
+      }
+    }
+    ACTIVE_API_DBS.clear();
+  };
+  process.once('exit', closeAll);
+  process.once('SIGINT', closeAll);
+  process.once('SIGTERM', closeAll);
+}
+
 export function parseRange(from, to) {
-  const fromValue = safeQueryValue(from);
-  const toValue = safeQueryValue(to);
+  let fromValue;
+  let toValue;
+  try {
+    const rawFrom = safeQueryValue(from);
+    const rawTo = safeQueryValue(to);
+    fromValue = rawFrom == null || rawFrom === '' ? null : ISO_DATE_SCHEMA.parse(String(rawFrom));
+    toValue = rawTo == null || rawTo === '' ? null : ISO_DATE_SCHEMA.parse(String(rawTo));
+  } catch {
+    throw new Error('Invalid from/to date range. Use YYYY-MM-DD.');
+  }
 
   const end = toValue
     ? DateTime.fromISO(String(toValue), { zone: BERLIN_TZ }).plus({ days: 1 }).startOf('day')
@@ -115,6 +174,20 @@ function computeTrackTrend(db, trackKey, nowBerlin = DateTime.now().setZone(BERL
 }
 
 export function createApiHandlers({ configPath, dbPath, logger }) {
+  const sharedDb = openDb(dbPath);
+  ACTIVE_API_DBS.add(sharedDb);
+  registerApiDbHooks(logger);
+
+  const closeSharedDb = () => {
+    if (!ACTIVE_API_DBS.has(sharedDb)) return;
+    ACTIVE_API_DBS.delete(sharedDb);
+    try {
+      sharedDb.close();
+    } catch (error) {
+      logger?.warn?.({ err: error instanceof Error ? error.message : String(error) }, 'failed to close shared api db');
+    }
+  };
+
   const backpoolInFlight = new Map();
   const backpoolCache = new Map();
   const BACKPOOL_CACHE_TTL_MS = 20 * 1000;
@@ -124,6 +197,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
   }
 
   return {
+    __close: closeSharedDb,
     health: (_req, res) => {
       res.json({ ok: true, time: new Date().toISOString() });
     },
@@ -141,6 +215,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/tracks/search?q=QUERY&limit=30',
           'GET /api/tracks/:trackKey/series?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/series-by-station?bucket=day|week|month|year&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=10',
+          'GET /api/panel/active-senders?from=YYYY-MM-DD&to=YYYY-MM-DD&minPlays=50',
           'GET /api/tracks/:trackKey/totals?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/stations?from=YYYY-MM-DD&to=YYYY-MM-DD',
           'GET /api/tracks/:trackKey/trend',
@@ -164,137 +239,112 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     },
 
     stations: (_req, res) => {
-      const db = openDb(dbPath);
+      const db = sharedDb;
       try {
         const rows = listStations(db);
         res.json(rows);
       } finally {
-        db.close();
+        /* shared db: closed on shutdown */
       }
     },
 
     tracks: (req, res) => {
-      const q = String(safeQueryValue(req.query.q) ?? '').trim();
-      const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-      const includeTrackKey = req.query.includeTrackKey ? String(safeQueryValue(req.query.includeTrackKey)).trim() : undefined;
-      const rawLimitParam = safeQueryValue(req.query.limit);
-      const limitParam = rawLimitParam == null ? '' : String(rawLimitParam).trim().toLowerCase();
-      let limit = 100;
-      if (limitParam === 'all' || limitParam === '0' || limitParam === 'max') {
-        limit = null;
-      } else if (limitParam) {
-        const rawLimit = Number(limitParam);
-        limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 100;
-      }
-
-      const db = openDb(dbPath);
       try {
-        const rows = listTracks(db, { query: q, stationId, limit, includeTrackKey });
+        const query = normalizeQuery(req.query);
+        const q = String(query.q ?? '').trim();
+        const stationId = query.stationId ? String(query.stationId) : undefined;
+        const includeTrackKey = query.includeTrackKey ? String(query.includeTrackKey).trim() : undefined;
+        const limitParam = query.limit == null ? '' : String(query.limit).trim().toLowerCase();
+        let limit = 100;
+        if (limitParam === 'all' || limitParam === '0' || limitParam === 'max') {
+          limit = null;
+        } else if (limitParam) {
+          limit = parseIntQuery(limitParam, { fallback: 100, min: 1, max: 5000, fieldName: 'limit' });
+        }
+
+        const rows = listTracks(sharedDb, { query: q, stationId, limit, includeTrackKey });
         res.json(rows);
-      } finally {
-        db.close();
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
     },
 
     newTitles: (req, res) => {
       try {
-        const from = req.query.from ? String(safeQueryValue(req.query.from)) : DateTime.now().setZone(BERLIN_TZ).minus({ days: 30 }).toISODate();
-        const to = req.query.to ? String(safeQueryValue(req.query.to)) : DateTime.now().setZone(BERLIN_TZ).toISODate();
-        const stationId = req.query.station ? String(safeQueryValue(req.query.station)) : undefined;
-        const query = String(safeQueryValue(req.query.q) ?? '').trim();
-        const rawLimit = Number(safeQueryValue(req.query.limit) ?? 250);
-        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 5000)) : 250;
-        const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 1);
-        const minPlays = Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 5000)) : 1;
-        const requireReleaseDate = String(safeQueryValue(req.query.requireReleaseDate) ?? '1') !== '0';
-        const rawMaxReleaseAgeDays = Number(safeQueryValue(req.query.maxReleaseAgeDays) ?? 730);
-        const maxReleaseAgeDays = Number.isFinite(rawMaxReleaseAgeDays)
-          ? Math.max(0, Math.min(rawMaxReleaseAgeDays, 36500))
-          : 730;
-        const rawMinReleaseConfidence = Number(safeQueryValue(req.query.minReleaseConfidence) ?? 0.55);
-        const minReleaseConfidence = Number.isFinite(rawMinReleaseConfidence)
-          ? Math.max(0, Math.min(rawMinReleaseConfidence, 1))
-          : 0.55;
+        const query = normalizeQuery(req.query);
+        const from = query.from ? String(query.from) : DateTime.now().setZone(BERLIN_TZ).minus({ days: 30 }).toISODate();
+        const to = query.to ? String(query.to) : DateTime.now().setZone(BERLIN_TZ).toISODate();
+        const stationId = query.station ? String(query.station) : undefined;
+        const searchQuery = String(query.q ?? '').trim();
+        const limit = parseIntQuery(query.limit, { fallback: 250, min: 1, max: 5000, fieldName: 'limit' });
+        const minPlays = parseIntQuery(query.minPlays, { fallback: 1, min: 1, max: 5000, fieldName: 'minPlays' });
+        const requireReleaseDate = String(query.requireReleaseDate ?? '1') !== '0';
+        const maxReleaseAgeDays = parseIntQuery(query.maxReleaseAgeDays, { fallback: 730, min: 0, max: 36500, fieldName: 'maxReleaseAgeDays' });
+        const minReleaseConfidence = parseFloatQuery(query.minReleaseConfidence, { fallback: 0.55, min: 0, max: 1, fieldName: 'minReleaseConfidence' });
         const { startUtcIso, endUtcIso } = parseRange(from, to);
 
-        const db = openDb(dbPath);
-        try {
-          const rows = listNewTitles(db, {
-            startUtcIso,
-            endUtcIso,
-            referenceDateIso: to,
-            stationId,
-            query,
-            minPlays,
-            limit,
-            requireReleaseDate,
-            maxReleaseAgeDays,
-            minReleaseConfidence
-          });
-          return res.json({
-            from,
-            to,
-            station: stationId ?? null,
-            limit,
-            minPlays,
-            requireReleaseDate,
-            maxReleaseAgeDays,
-            minReleaseConfidence,
-            rows
-          });
-        } finally {
-          db.close();
-        }
+        const rows = listNewTitles(sharedDb, {
+          startUtcIso,
+          endUtcIso,
+          referenceDateIso: to,
+          stationId,
+          query: searchQuery,
+          minPlays,
+          limit,
+          requireReleaseDate,
+          maxReleaseAgeDays,
+          minReleaseConfidence
+        });
+        return res.json({
+          from,
+          to,
+          station: stationId ?? null,
+          limit,
+          minPlays,
+          requireReleaseDate,
+          maxReleaseAgeDays,
+          minReleaseConfidence,
+          rows
+        });
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
     },
 
     search: (req, res) => {
-      const q = String(safeQueryValue(req.query.q) ?? '').trim();
-      const rawLimit = Number(safeQueryValue(req.query.limit) ?? 30);
-      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 100)) : 30;
-
-      if (!q) return res.status(400).json({ error: 'Missing q' });
-
-      const db = openDb(dbPath);
       try {
-        const rows = searchTracks(db, q, limit);
+        const query = normalizeQuery(req.query);
+        const q = String(query.q ?? '').trim();
+        const limit = parseIntQuery(query.limit, { fallback: 30, min: 1, max: 100, fieldName: 'limit' });
+        if (!q) return res.status(400).json({ error: 'Missing q' });
+        const rows = searchTracks(sharedDb, q, limit);
         res.json(rows);
-      } finally {
-        db.close();
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
     },
 
     trackSeries: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
-        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-        const bucket = String(safeQueryValue(req.query.bucket) ?? 'day');
-        if (!BUCKETS.has(bucket)) {
-          return res.status(400).json({ error: 'Invalid bucket. Use day|week|month|year.' });
+        const query = normalizeQuery(req.query);
+        const stationId = query.stationId ? String(query.stationId) : undefined;
+        const bucket = parseBucket(query.bucket, 'day');
+        const { startUtcIso, endUtcIso } = parseRange(query.from, query.to);
+
+        const identity = getTrackIdentity(sharedDb, trackKey);
+        if (!identity?.artist || !identity?.title) {
+          return res.status(404).json({ error: 'Unknown trackKey' });
         }
 
-        const { startUtcIso, endUtcIso } = parseRange(req.query.from, req.query.to);
-
-        const db = openDb(dbPath);
-        try {
-          const identity = getTrackIdentity(db, trackKey);
-          if (!identity?.artist || !identity?.title) {
-            return res.status(404).json({ error: 'Unknown trackKey' });
-          }
-
-          const rows = getTrackPlays(db, { trackKey, stationId, startUtcIso, endUtcIso });
-          return res.json({
-            trackKey,
-            stationId: stationId ?? null,
-            bucket,
-            identity,
-            series: buildTrackSeries(rows, bucket)
-          });
-        } finally {
-          db.close();
-        }
+        const rows = getTrackPlays(sharedDb, { trackKey, stationId, startUtcIso, endUtcIso });
+        return res.json({
+          trackKey,
+          stationId: stationId ?? null,
+          bucket,
+          identity,
+          series: buildTrackSeries(rows, bucket)
+        });
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -303,28 +353,24 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     trackTotals: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
-        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-        const from = req.query.from ? String(safeQueryValue(req.query.from)) : '2000-01-01';
-        const to = req.query.to ? String(safeQueryValue(req.query.to)) : DateTime.now().setZone(BERLIN_TZ).toISODate();
+        const query = normalizeQuery(req.query);
+        const stationId = query.stationId ? String(query.stationId) : undefined;
+        const from = query.from ? String(query.from) : '2000-01-01';
+        const to = query.to ? String(query.to) : DateTime.now().setZone(BERLIN_TZ).toISODate();
         const { startUtcIso, endUtcIso } = parseRange(from, to);
 
-        const db = openDb(dbPath);
-        try {
-          const identity = getTrackIdentity(db, trackKey);
-          if (!identity?.artist || !identity?.title) {
-            return res.status(404).json({ error: 'Unknown trackKey' });
-          }
-
-          const rows = getTrackPlays(db, { trackKey, stationId, startUtcIso, endUtcIso });
-          return res.json({
-            trackKey,
-            stationId: stationId ?? null,
-            identity,
-            totals: buildTrackTotals(rows)
-          });
-        } finally {
-          db.close();
+        const identity = getTrackIdentity(sharedDb, trackKey);
+        if (!identity?.artist || !identity?.title) {
+          return res.status(404).json({ error: 'Unknown trackKey' });
         }
+
+        const rows = getTrackPlays(sharedDb, { trackKey, stationId, startUtcIso, endUtcIso });
+        return res.json({
+          trackKey,
+          stationId: stationId ?? null,
+          identity,
+          totals: buildTrackTotals(rows)
+        });
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -333,35 +379,79 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     trackSeriesByStation: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
-        const bucket = String(safeQueryValue(req.query.bucket) ?? 'day');
-        if (!BUCKETS.has(bucket)) {
-          return res.status(400).json({ error: 'Invalid bucket. Use day|week|month|year.' });
-        }
-        const rawLimit = Number(safeQueryValue(req.query.limit) ?? 10);
-        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 20)) : 10;
-        const { startUtcIso, endUtcIso } = parseRange(req.query.from, req.query.to);
+        const query = normalizeQuery(req.query);
+        const bucket = parseBucket(query.bucket, 'day');
+        const limit = parseIntQuery(query.limit, { fallback: 10, min: 1, max: 20, fieldName: 'limit' });
+        const { startUtcIso, endUtcIso } = parseRange(query.from, query.to);
 
-        const db = openDb(dbPath);
-        try {
-          const identity = getTrackIdentity(db, trackKey);
-          if (!identity?.artist || !identity?.title) {
-            return res.status(404).json({ error: 'Unknown trackKey' });
+        const identity = getTrackIdentity(sharedDb, trackKey);
+        if (!identity?.artist || !identity?.title) {
+          return res.status(404).json({ error: 'Unknown trackKey' });
+        }
+
+        const rows = getTrackPlays(sharedDb, { trackKey, startUtcIso, endUtcIso });
+        const stationRows = listStations(sharedDb);
+        const stationsById = new Map(stationRows.map((row) => [row.id, row.name || row.id]));
+        const grouped = buildTrackSeriesByStation(rows, stationsById, bucket);
+        return res.json({
+          trackKey,
+          bucket,
+          identity,
+          periods: grouped.periods,
+          stations: grouped.stations.slice(0, limit)
+        });
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    panelActiveSenders: (req, res) => {
+      try {
+        const query = normalizeQuery(req.query);
+        const from = query.from ? String(query.from) : DateTime.now().setZone(BERLIN_TZ).minus({ days: 30 }).toISODate();
+        const to = query.to ? String(query.to) : DateTime.now().setZone(BERLIN_TZ).toISODate();
+        const minPlays = parseIntQuery(query.minPlays, { fallback: 50, min: 1, max: 10000, fieldName: 'minPlays' });
+        const { startUtcIso, endUtcIso } = parseRange(from, to);
+
+        const rows = sharedDb.prepare(`
+          select station_id, played_at_utc
+          from plays
+          where played_at_utc >= ?
+            and played_at_utc < ?
+          order by played_at_utc asc
+        `).all(startUtcIso, endUtcIso);
+
+        const dayStationCounts = new Map();
+        for (const row of rows) {
+          const period = DateTime.fromISO(row.played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ).toISODate();
+          if (!period) continue;
+          if (!dayStationCounts.has(period)) dayStationCounts.set(period, new Map());
+          const perStation = dayStationCounts.get(period);
+          const stationId = String(row.station_id || '');
+          if (!stationId) continue;
+          perStation.set(stationId, Number(perStation.get(stationId) || 0) + 1);
+        }
+
+        const startDay = DateTime.fromISO(from, { zone: BERLIN_TZ }).startOf('day');
+        const endDay = DateTime.fromISO(to, { zone: BERLIN_TZ }).startOf('day');
+        if (!startDay.isValid || !endDay.isValid || endDay < startDay) {
+          return res.status(400).json({ error: 'Invalid from/to date range. Use YYYY-MM-DD.' });
+        }
+
+        const series = [];
+        let cursor = startDay;
+        while (cursor <= endDay) {
+          const period = cursor.toISODate();
+          const perStation = dayStationCounts.get(period) || new Map();
+          let active = 0;
+          for (const plays of perStation.values()) {
+            if (Number(plays || 0) >= minPlays) active += 1;
           }
-
-          const rows = getTrackPlays(db, { trackKey, startUtcIso, endUtcIso });
-          const stationRows = listStations(db);
-          const stationsById = new Map(stationRows.map((row) => [row.id, row.name || row.id]));
-          const grouped = buildTrackSeriesByStation(rows, stationsById, bucket);
-          return res.json({
-            trackKey,
-            bucket,
-            identity,
-            periods: grouped.periods,
-            stations: grouped.stations.slice(0, limit)
-          });
-        } finally {
-          db.close();
+          series.push({ period, active_senders: active });
+          cursor = cursor.plus({ days: 1 });
         }
+
+        return res.json({ from, to, minPlays, series });
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -374,7 +464,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const to = req.query.to ? String(safeQueryValue(req.query.to)) : DateTime.now().setZone(BERLIN_TZ).toISODate();
         const { startUtcIso, endUtcIso } = parseRange(from, to);
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const identity = getTrackIdentity(db, trackKey);
           if (!identity?.artist || !identity?.title) {
@@ -388,7 +478,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             stations: rows
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -398,7 +488,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     trackTrend: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const identity = getTrackIdentity(db, trackKey);
           if (!identity?.artist || !identity?.title) {
@@ -407,7 +497,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           const trend = computeTrackTrend(db, trackKey);
           return res.json({ trackKey, identity, ...trend });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -421,7 +511,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const startUtcIso = nowBerlin.minus({ days: 7 }).toUTC().toISO();
         const endUtcIso = nowBerlin.toUTC().toISO();
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const identity = getTrackIdentity(db, trackKey);
           if (!identity?.artist || !identity?.title) {
@@ -475,7 +565,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             rows
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -490,7 +580,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const startUtcIso = nowBerlin.minus({ days }).startOf('day').toUTC().toISO();
         const endUtcIso = nowBerlin.toUTC().toISO();
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const rows = db.prepare(`
             select
@@ -511,7 +601,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           `).all(startUtcIso, endUtcIso, minStations);
           return res.json({ days, minStations, rows });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -526,7 +616,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const prev30 = nowBerlin.minus({ days: 60 }).toUTC().toISO();
         const end = nowBerlin.toUTC().toISO();
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const playsNow = db.prepare(`
             select artist, count(*) as plays
@@ -585,7 +675,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
 
           return res.json({ window_days: 30, rows });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -595,7 +685,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     trackLifecycle: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const identity = getTrackIdentity(db, trackKey);
           if (!identity?.artist || !identity?.title) {
@@ -633,7 +723,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             status
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -647,7 +737,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const limit = Math.floor(parseNumberInRange(safeQueryValue(req.query.limit), 100, 10, 1000));
         const startDate = DateTime.now().setZone(BERLIN_TZ).minus({ days }).toISODate();
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const rows = db.prepare(`
             select date_berlin, track_key, artist, title, plays
@@ -692,7 +782,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             rows: outliers.slice(0, limit)
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -708,7 +798,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const endUtcIso = nowBerlin.toUTC().toISO();
         const newCutoffUtc = nowBerlin.minus({ days: 30 }).toUTC().toISO();
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const station = listStations(db).find((row) => row.id === stationId);
           if (!station) return res.status(404).json({ error: 'Unknown stationId' });
@@ -806,7 +896,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             genre_distribution: genres
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -832,7 +922,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     trackMeta: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const identity = getTrackIdentity(db, trackKey);
           if (!identity?.artist || !identity?.title) {
@@ -845,7 +935,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             metadata: metadata ?? null
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -856,7 +946,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       try {
         const trackKey = req.params.trackKey;
         const force = String(safeQueryValue(req.query.force) ?? '1') !== '0';
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const identity = getTrackIdentity(db, trackKey);
           if (!identity?.artist || !identity?.title) {
@@ -880,7 +970,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             fromCache: Boolean(result.fromCache)
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -905,7 +995,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           : DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();
 
         const ranges = buildWeekRanges(weekStart);
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const rows = getNewTracksInWeek(db, {
             startUtcIso: ranges.current.startUtcIso,
@@ -919,7 +1009,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           });
           return res.json({ weekStart, stationId: stationId ?? null, maxReleaseAgeDays, releaseYear, rows });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1036,7 +1126,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const rawLimit = Number(safeQueryValue(req.query.limit) ?? 500);
         const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 2000)) : 500;
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const rows = listBackpoolTrackCatalog(db, { stationId, classification, limit });
           return res.json({
@@ -1045,7 +1135,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             rows
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1055,7 +1145,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     backpoolSummary: (req, res) => {
       try {
         const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const data = listBackpoolStationSummary(db, { stationId });
           return res.json({
@@ -1063,7 +1153,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             rows: Array.isArray(data) ? data : data ? [data] : []
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1091,7 +1181,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const station = config.stations.find((s) => s.id === stationId);
         if (!station) return res.status(404).json({ error: 'Unknown stationId' });
 
-        const db = openDb(dbPath);
+        const db = sharedDb;
         try {
           const currentRows = listTracks(db, { stationId, limit: 1000 });
           const previousRowsRaw = db.prepare(`
@@ -1144,7 +1234,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             catalogSize: currentRows.length
           });
         } finally {
-          db.close();
+          /* shared db: closed on shutdown */
         }
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1166,6 +1256,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.use('/assets', express.static(path.join(PUBLIC_DIR, 'assets')));
 
   const handlers = createApiHandlers({ configPath, dbPath, logger });
+  app.locals.closeApiDb = handlers.__close;
 
   app.get('/', (_req, res) => res.redirect('/dashboard'));
   app.get('/dashboard', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
@@ -1181,6 +1272,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/tracks/search', handlers.search);
   app.get('/api/tracks/:trackKey/series', handlers.trackSeries);
   app.get('/api/tracks/:trackKey/series-by-station', handlers.trackSeriesByStation);
+  app.get('/api/panel/active-senders', handlers.panelActiveSenders);
   app.get('/api/tracks/:trackKey/totals', handlers.trackTotals);
   app.get('/api/tracks/:trackKey/stations', handlers.trackStations);
   app.get('/api/tracks/:trackKey/trend', handlers.trackTrend);

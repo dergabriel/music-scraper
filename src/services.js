@@ -1795,6 +1795,25 @@ export async function runIngest({ configPath, dbPath, logger }) {
         }
         plays = filtered;
       }
+      let dedupedByMinGap = 0;
+      const minPlayGapSeconds = Math.max(0, Number(station.min_play_gap_seconds) || 0);
+      if (minPlayGapSeconds > 0 && plays.length > 1) {
+        const minGapMs = minPlayGapSeconds * 1000;
+        const sorted = [...plays].sort((a, b) => a.playedAt.getTime() - b.playedAt.getTime());
+        const filtered = [];
+        let lastAcceptedAtMs = Number.NEGATIVE_INFINITY;
+        for (const play of sorted) {
+          const playedAtMs = play.playedAt.getTime();
+          if (!Number.isFinite(playedAtMs)) continue;
+          if (playedAtMs - lastAcceptedAtMs < minGapMs) {
+            dedupedByMinGap += 1;
+            continue;
+          }
+          filtered.push(play);
+          lastAcceptedAtMs = playedAtMs;
+        }
+        plays = filtered;
+      }
 
       let inserted = 0;
       let skippedNoise = 0;
@@ -1954,6 +1973,8 @@ export async function runIngest({ configPath, dbPath, logger }) {
           skippedJingle,
           dedupedCooldown,
           dedupedByMinute,
+          dedupedByMinGap,
+          minPlayGapSeconds,
           verificationEnabled,
           verifyAllTracks
         },

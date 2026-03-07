@@ -23,6 +23,8 @@ create table if not exists plays(
 
 create index if not exists idx_plays_station_played_at on plays(station_id, played_at_utc);
 create index if not exists idx_plays_track_key on plays(track_key);
+create index if not exists idx_plays_track_played_at on plays(track_key, played_at_utc);
+create index if not exists idx_plays_track_station_played_at on plays(track_key, station_id, played_at_utc);
 
 create table if not exists play_dedup_events(
   id integer primary key autoincrement,

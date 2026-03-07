@@ -5,6 +5,33 @@ import Database from 'better-sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const DB_STATEMENT_CACHE = new WeakMap();
+const DB_QUERY_API_CACHE = new WeakMap();
+
+export function createDbQueries(db) {
+  return {
+    prepare(key, sql) {
+      let cache = DB_STATEMENT_CACHE.get(db);
+      if (!cache) {
+        cache = new Map();
+        DB_STATEMENT_CACHE.set(db, cache);
+      }
+      if (!cache.has(key)) {
+        cache.set(key, db.prepare(sql));
+      }
+      return cache.get(key);
+    }
+  };
+}
+
+function dbQueries(db) {
+  let queryApi = DB_QUERY_API_CACHE.get(db);
+  if (!queryApi) {
+    queryApi = createDbQueries(db);
+    DB_QUERY_API_CACHE.set(db, queryApi);
+  }
+  return queryApi;
+}
 
 export function openDb(dbPath) {
   const db = new Database(dbPath);
@@ -49,11 +76,13 @@ function ensureTrackMetadataColumns(db) {
     db.exec('alter table plays add column dedup_song_key text');
   }
   db.exec('create index if not exists idx_plays_station_songkey_playedat on plays(station_id, dedup_song_key, played_at_utc)');
+  db.exec('create index if not exists idx_plays_track_played_at on plays(track_key, played_at_utc)');
+  db.exec('create index if not exists idx_plays_track_station_played_at on plays(track_key, station_id, played_at_utc)');
   db.exec('create index if not exists idx_track_metadata_isrc on track_metadata(isrc)');
 }
 
 export function upsertStation(db, station) {
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('upsertStation', `
     insert into stations(id, name, url, timezone)
     values (@id, @name, @playlist_url, @timezone)
     on conflict(id) do update set
@@ -71,7 +100,7 @@ export function insertPlayIgnore(db, row) {
     source_url: row?.source_url ?? null,
     ingested_at_utc: row?.ingested_at_utc ?? null
   };
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('insertPlayIgnore', `
     insert or ignore into plays(
       station_id,
       played_at_utc,
@@ -100,7 +129,7 @@ export function insertPlayIgnore(db, row) {
 }
 
 export function insertDedupEvent(db, row) {
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('insertDedupEvent', `
     insert into play_dedup_events(
       station_id,
       played_at_utc,
@@ -135,7 +164,7 @@ export function insertDedupEvent(db, row) {
 }
 
 export function getStationTrackCounts(db, stationId, startUtcIso, endUtcIso) {
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('getStationTrackCounts', `
     select
       track_key,
       min(artist) as artist,
@@ -152,7 +181,7 @@ export function getStationTrackCounts(db, stationId, startUtcIso, endUtcIso) {
 }
 
 export function getStationTrackCountsWithMetadata(db, stationId, startUtcIso, endUtcIso) {
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('getStationTrackCountsWithMetadata', `
     select
       p.track_key,
       min(p.artist) as artist,
@@ -180,7 +209,7 @@ export function getStationTrackCountsWithMetadata(db, stationId, startUtcIso, en
 }
 
 export function getStationTotalPlays(db, stationId, startUtcIso, endUtcIso) {
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('getStationTotalPlays', `
     select count(*) as total
     from plays
     where station_id = ?
@@ -191,7 +220,7 @@ export function getStationTotalPlays(db, stationId, startUtcIso, endUtcIso) {
 }
 
 export function getStationPlayedAtUtc(db, stationId, startUtcIso, endUtcIso) {
-  return db.prepare(`
+  return dbQueries(db).prepare('getStationPlayedAtUtc', `
     select played_at_utc
     from plays
     where station_id = ?
@@ -202,7 +231,7 @@ export function getStationPlayedAtUtc(db, stationId, startUtcIso, endUtcIso) {
 }
 
 export function getOverallTrackCounts(db, startUtcIso, endUtcIso) {
-  const stmt = db.prepare(`
+  const stmt = dbQueries(db).prepare('getOverallTrackCounts', `
     select
       track_key,
       min(artist) as artist,
@@ -218,13 +247,14 @@ export function getOverallTrackCounts(db, startUtcIso, endUtcIso) {
 }
 
 export function clearDailyStatsForDate(db, dateBerlin) {
-  db.prepare('delete from daily_station_stats where date_berlin = ?').run(dateBerlin);
-  db.prepare('delete from daily_track_stats where date_berlin = ?').run(dateBerlin);
-  db.prepare('delete from daily_overall_track_stats where date_berlin = ?').run(dateBerlin);
+  const q = dbQueries(db);
+  q.prepare('clearDailyStatsForDate:station', 'delete from daily_station_stats where date_berlin = ?').run(dateBerlin);
+  q.prepare('clearDailyStatsForDate:track', 'delete from daily_track_stats where date_berlin = ?').run(dateBerlin);
+  q.prepare('clearDailyStatsForDate:overall', 'delete from daily_overall_track_stats where date_berlin = ?').run(dateBerlin);
 }
 
 export function upsertDailyStationStat(db, row) {
-  db.prepare(`
+  dbQueries(db).prepare('upsertDailyStationStat', `
     insert into daily_station_stats(date_berlin, station_id, total_plays, unique_tracks)
     values (@date_berlin, @station_id, @total_plays, @unique_tracks)
     on conflict(date_berlin, station_id) do update set
@@ -234,7 +264,7 @@ export function upsertDailyStationStat(db, row) {
 }
 
 export function upsertDailyTrackStat(db, row) {
-  db.prepare(`
+  dbQueries(db).prepare('upsertDailyTrackStat', `
     insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
     values (@date_berlin, @station_id, @track_key, @artist, @title, @plays)
     on conflict(date_berlin, station_id, track_key) do update set
@@ -245,7 +275,7 @@ export function upsertDailyTrackStat(db, row) {
 }
 
 export function upsertDailyOverallTrackStat(db, row) {
-  db.prepare(`
+  dbQueries(db).prepare('upsertDailyOverallTrackStat', `
     insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
     values (@date_berlin, @track_key, @artist, @title, @plays)
     on conflict(date_berlin, track_key) do update set
@@ -256,11 +286,11 @@ export function upsertDailyOverallTrackStat(db, row) {
 }
 
 export function listStations(db) {
-  return db.prepare('select id, name, url, timezone from stations order by name asc').all();
+  return dbQueries(db).prepare('listStations', 'select id, name, url, timezone from stations order by name asc').all();
 }
 
 export function searchTracks(db, query, limit = 30) {
-  return db.prepare(`
+  return dbQueries(db).prepare('searchTracks', `
     select
       track_key,
       min(artist) as artist,
@@ -275,8 +305,9 @@ export function searchTracks(db, query, limit = 30) {
 }
 
 export function getTrackPlays(db, { trackKey, stationId, startUtcIso, endUtcIso }) {
+  const q = dbQueries(db);
   if (stationId) {
-    return db.prepare(`
+    return q.prepare('getTrackPlays:station', `
       select station_id, played_at_utc
       from plays
       where track_key = ?
@@ -287,7 +318,7 @@ export function getTrackPlays(db, { trackKey, stationId, startUtcIso, endUtcIso 
     `).all(trackKey, stationId, startUtcIso, endUtcIso);
   }
 
-  return db.prepare(`
+  return q.prepare('getTrackPlays:allStations', `
     select station_id, played_at_utc
     from plays
     where track_key = ?
@@ -298,7 +329,7 @@ export function getTrackPlays(db, { trackKey, stationId, startUtcIso, endUtcIso 
 }
 
 export function getTrackIdentity(db, trackKey) {
-  return db.prepare(`
+  return dbQueries(db).prepare('getTrackIdentity', `
     select min(artist) as artist, min(title) as title
     from plays
     where track_key = ?
@@ -306,7 +337,7 @@ export function getTrackIdentity(db, trackKey) {
 }
 
 export function getTrackMetadata(db, trackKey) {
-  return db.prepare(`
+  return dbQueries(db).prepare('getTrackMetadata', `
     select
       track_key,
       artist,
@@ -348,7 +379,7 @@ export function upsertTrackMetadata(db, row) {
     canonical_source: row?.canonical_source ?? null,
     canonical_id: row?.canonical_id ?? null
   };
-  db.prepare(`
+  dbQueries(db).prepare('upsertTrackMetadata', `
     insert into track_metadata(
       track_key,
       artist,
@@ -437,7 +468,7 @@ export function upsertTrackMetadata(db, row) {
 }
 
 export function upsertCanonicalMap(db, row) {
-  db.prepare(`
+  dbQueries(db).prepare('upsertCanonicalMap', `
     insert into canonical_map(
       canonical_title,
       canonical_primary_artist,
@@ -456,7 +487,7 @@ export function upsertCanonicalMap(db, row) {
 }
 
 export function listCanonicalMap(db) {
-  return db.prepare(`
+  return dbQueries(db).prepare('listCanonicalMap', `
     select
       canonical_title,
       canonical_primary_artist,
@@ -467,15 +498,16 @@ export function listCanonicalMap(db) {
 }
 
 export function listTracks(db, { query = '', stationId, limit = 100, includeTrackKey } = {}) {
+  const q = dbQueries(db);
   const numericLimit = Number(limit);
   const parsedLimit = Number.isFinite(numericLimit) && numericLimit > 0
     ? Math.max(1, Math.min(numericLimit, 5000))
     : null;
-  const run = (sql, params = []) => {
+  const run = (key, sql, params = []) => {
     if (parsedLimit == null) {
-      return db.prepare(sql).all(...params);
+      return q.prepare(`${key}:nolimit`, sql).all(...params);
     }
-    return db.prepare(`${sql}\n      limit ?`).all(...params, parsedLimit);
+    return q.prepare(`${key}:limit`, `${sql}\n      limit ?`).all(...params, parsedLimit);
   };
 
   const includeKey = String(includeTrackKey || '').trim();
@@ -489,7 +521,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
       params.push(stationId);
     }
 
-    const included = db.prepare(`
+    const included = q.prepare(`listTracks:include:${stationId ? 'station' : 'all'}`, `
       select
         p.track_key,
         min(p.artist) as artist,
@@ -518,7 +550,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
   };
 
   if (stationId && query) {
-    return withIncludedTrack(run(`
+    return withIncludedTrack(run('listTracks:stationQuery', `
       select
         p.track_key,
         min(p.artist) as artist,
@@ -542,7 +574,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
   }
 
   if (stationId) {
-    return withIncludedTrack(run(`
+    return withIncludedTrack(run('listTracks:station', `
       select
         p.track_key,
         min(p.artist) as artist,
@@ -565,7 +597,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
   }
 
   if (query) {
-    return withIncludedTrack(run(`
+    return withIncludedTrack(run('listTracks:query', `
       select
         p.track_key,
         min(p.artist) as artist,
@@ -587,7 +619,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
     `, [`%${query}%`, `%${query}%`]));
   }
 
-  return withIncludedTrack(run(`
+  return withIncludedTrack(run('listTracks:all', `
     select
       p.track_key,
       min(p.artist) as artist,
@@ -677,7 +709,8 @@ export function listNewTitles(
     limit ?
   `;
 
-  const rows = db.prepare(sql).all(...params, startUtcIso, endUtcIso, parsedMinPlays, candidateLimit);
+  const stmtKey = `listNewTitles:${stationId ? 'station' : 'all'}:${hasQuery ? 'query' : 'noquery'}`;
+  const rows = dbQueries(db).prepare(stmtKey, sql).all(...params, startUtcIso, endUtcIso, parsedMinPlays, candidateLimit);
   const referenceMs = refDateIso ? Date.parse(`${refDateIso}T12:00:00.000Z`) : Date.parse(endUtcIso);
 
   const filtered = rows.filter((row) => {
@@ -709,7 +742,7 @@ export function listNewTitles(
 }
 
 export function getTrackStationCounts(db, { trackKey, startUtcIso, endUtcIso }) {
-  return db.prepare(`
+  return dbQueries(db).prepare('getTrackStationCounts', `
     select
       p.station_id,
       min(s.name) as station_name,
@@ -744,7 +777,7 @@ export function getNewTracksInWeek(
     : null;
 
   if (stationId) {
-    return db.prepare(`
+    return dbQueries(db).prepare('getNewTracksInWeek:station', `
       with current_week as (
         select track_key, min(artist) as artist, min(title) as title, count(*) as plays
         from plays
@@ -790,7 +823,7 @@ export function getNewTracksInWeek(
     );
   }
 
-  return db.prepare(`
+  return dbQueries(db).prepare('getNewTracksInWeek:all', `
     with current_week as (
       select track_key, min(artist) as artist, min(title) as title, count(*) as plays
       from plays
@@ -833,8 +866,9 @@ export function getNewTracksInWeek(
 }
 
 export function dedupeStationToOnePlayPerMinute(db, stationId) {
-  const before = db.prepare('select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
-  db.prepare(`
+  const q = dbQueries(db);
+  const before = q.prepare('dedupeStationToOnePlayPerMinute:before', 'select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
+  q.prepare('dedupeStationToOnePlayPerMinute:delete', `
     delete from plays
     where station_id = ?
       and id not in (
@@ -844,12 +878,47 @@ export function dedupeStationToOnePlayPerMinute(db, stationId) {
         group by substr(played_at_utc, 1, 16)
       )
   `).run(stationId, stationId);
-  const after = db.prepare('select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
+  const after = q.prepare('dedupeStationToOnePlayPerMinute:after', 'select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
   return { before, after, removed: Math.max(0, before - after) };
 }
 
+export function dedupeStationByMinGapSeconds(db, stationId, minGapSeconds = 60) {
+  const q = dbQueries(db);
+  const safeGapSeconds = Math.max(1, Math.floor(Number(minGapSeconds) || 60));
+  const before = q.prepare('dedupeStationByMinGapSeconds:before', 'select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
+  const rows = q.prepare('dedupeStationByMinGapSeconds:rows', `
+    select id, played_at_utc
+    from plays
+    where station_id = ?
+    order by played_at_utc asc, id asc
+  `).all(stationId);
+
+  const toDelete = [];
+  let lastKeptAtMs = Number.NEGATIVE_INFINITY;
+  for (const row of rows) {
+    const playedAtMs = Date.parse(row.played_at_utc);
+    if (!Number.isFinite(playedAtMs)) continue;
+    if (playedAtMs - lastKeptAtMs < safeGapSeconds * 1000) {
+      toDelete.push(row.id);
+      continue;
+    }
+    lastKeptAtMs = playedAtMs;
+  }
+
+  if (toDelete.length) {
+    const delStmt = q.prepare('dedupeStationByMinGapSeconds:deleteById', 'delete from plays where id = ?');
+    const tx = db.transaction((ids) => {
+      for (const id of ids) delStmt.run(id);
+    });
+    tx(toDelete);
+  }
+
+  const after = q.prepare('dedupeStationByMinGapSeconds:after', 'select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
+  return { before, after, removed: Math.max(0, before - after), minGapSeconds: safeGapSeconds };
+}
+
 export function upsertBackpoolStationSummary(db, row) {
-  db.prepare(`
+  dbQueries(db).prepare('upsertBackpoolStationSummary', `
     insert into backpool_station_summary(
       station_id,
       station_name,
@@ -929,11 +998,11 @@ export function upsertBackpoolStationSummary(db, row) {
 }
 
 export function clearBackpoolTrackCatalogForStation(db, stationId) {
-  db.prepare('delete from backpool_track_catalog where station_id = ?').run(stationId);
+  dbQueries(db).prepare('clearBackpoolTrackCatalogForStation', 'delete from backpool_track_catalog where station_id = ?').run(stationId);
 }
 
 export function upsertBackpoolTrackCatalogRow(db, row) {
-  db.prepare(`
+  dbQueries(db).prepare('upsertBackpoolTrackCatalogRow', `
     insert into backpool_track_catalog(
       station_id,
       track_key,
@@ -1015,7 +1084,7 @@ export function listBackpoolTrackCatalog(db, { stationId, classification, limit 
   const parsedLimit = Math.max(1, Math.min(Number(limit) || 500, 2000));
 
   if (stationId && classification) {
-    return db.prepare(`
+    return dbQueries(db).prepare('listBackpoolTrackCatalog:stationAndClass', `
       select *
       from backpool_track_catalog
       where station_id = ?
@@ -1026,7 +1095,7 @@ export function listBackpoolTrackCatalog(db, { stationId, classification, limit 
   }
 
   if (stationId) {
-    return db.prepare(`
+    return dbQueries(db).prepare('listBackpoolTrackCatalog:station', `
       select *
       from backpool_track_catalog
       where station_id = ?
@@ -1036,7 +1105,7 @@ export function listBackpoolTrackCatalog(db, { stationId, classification, limit 
   }
 
   if (classification) {
-    return db.prepare(`
+    return dbQueries(db).prepare('listBackpoolTrackCatalog:class', `
       select *
       from backpool_track_catalog
       where classification = ?
@@ -1045,7 +1114,7 @@ export function listBackpoolTrackCatalog(db, { stationId, classification, limit 
     `).all(classification, parsedLimit);
   }
 
-  return db.prepare(`
+  return dbQueries(db).prepare('listBackpoolTrackCatalog:all', `
     select *
     from backpool_track_catalog
     order by plays desc, artist asc, title asc
@@ -1055,14 +1124,14 @@ export function listBackpoolTrackCatalog(db, { stationId, classification, limit 
 
 export function listBackpoolStationSummary(db, { stationId } = {}) {
   if (stationId) {
-    return db.prepare(`
+    return dbQueries(db).prepare('listBackpoolStationSummary:station', `
       select *
       from backpool_station_summary
       where station_id = ?
     `).get(stationId);
   }
 
-  return db.prepare(`
+  return dbQueries(db).prepare('listBackpoolStationSummary:all', `
     select *
     from backpool_station_summary
     order by station_name asc
