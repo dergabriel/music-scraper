@@ -17,7 +17,8 @@ import {
   runTrackOrientationMaintenance,
   runNoisePlayCleanup,
   runPromoMarkerMaintenance,
-  runReleaseDateBackfillMaintenance
+  runReleaseDateBackfillMaintenance,
+  runAllMaintenance
 } from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute, dedupeStationByMinGapSeconds } from './db.js';
 
@@ -244,20 +245,9 @@ program
   .action(async (opts) => {
     runIngest({ configPath: opts.config, dbPath: opts.db, logger })
       .then(async () => {
-        runNoisePlayCleanup({ dbPath: opts.db, logger });
-        runPromoMarkerMaintenance({ dbPath: opts.db, logger });
-        runItunesCanonicalMaintenance({ dbPath: opts.db, logger });
-        runCanonicalArtistMaintenance({ dbPath: opts.db, logger });
-        runMergeDuplicateTracksMaintenance({ dbPath: opts.db, logger });
-        runCanonicalMapRefreshMaintenance({ dbPath: opts.db, logger });
-        runTrackOrientationMaintenance({ dbPath: opts.db, logger });
-        await runReleaseDateBackfillMaintenance({
+        await runAllMaintenance({
           dbPath: opts.db,
-          maxLookups: Number(process.env.YRPA_RELEASE_BACKFILL_DAILY_LOOKUPS || 180),
-          minPlays: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_PLAYS || 1),
-          minConfidence: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_CONFIDENCE || 0.55),
-          staleHours: Number(process.env.YRPA_RELEASE_BACKFILL_STALE_HOURS || 12),
-          includeChart: false,
+          releaseMaxLookups: Number(process.env.YRPA_RELEASE_BACKFILL_DAILY_LOOKUPS || 180),
           logger
         });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();
@@ -328,20 +318,9 @@ program
       if (opts.startupReport) {
         logger.info('running startup ingest/evaluation/report before API boot');
         await runIngest({ configPath: opts.config, dbPath: opts.db, logger });
-        runNoisePlayCleanup({ dbPath: opts.db, logger });
-        runPromoMarkerMaintenance({ dbPath: opts.db, logger });
-        runItunesCanonicalMaintenance({ dbPath: opts.db, logger });
-        runCanonicalArtistMaintenance({ dbPath: opts.db, logger });
-        runMergeDuplicateTracksMaintenance({ dbPath: opts.db, logger });
-        runCanonicalMapRefreshMaintenance({ dbPath: opts.db, logger });
-        runTrackOrientationMaintenance({ dbPath: opts.db, logger });
-        await runReleaseDateBackfillMaintenance({
+        await runAllMaintenance({
           dbPath: opts.db,
-          maxLookups: Number(process.env.YRPA_RELEASE_BACKFILL_STARTUP_LOOKUPS || 260),
-          minPlays: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_PLAYS || 1),
-          minConfidence: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_CONFIDENCE || 0.55),
-          staleHours: Number(process.env.YRPA_RELEASE_BACKFILL_STALE_HOURS || 12),
-          includeChart: false,
+          releaseMaxLookups: Number(process.env.YRPA_RELEASE_BACKFILL_STARTUP_LOOKUPS || 260),
           logger
         });
         const berlinYesterday = DateTime.now().setZone(BERLIN_TZ).minus({ days: 1 }).toISODate();

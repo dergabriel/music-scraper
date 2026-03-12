@@ -497,6 +497,20 @@ export function listCanonicalMap(db) {
   `).all();
 }
 
+const LIST_TRACKS_SELECT = `
+  p.track_key,
+  min(p.artist) as artist,
+  min(p.title) as title,
+  count(*) as total_plays,
+  count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
+  round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
+  min(p.played_at_utc) as first_played_at_utc,
+  max(p.played_at_utc) as last_played_at_utc,
+  min(m.release_date_utc) as release_date_utc,
+  min(m.verification_confidence) as verification_confidence,
+  min(m.external_url) as external_url,
+  min(m.preview_url) as preview_url`.trim();
+
 export function listTracks(db, { query = '', stationId, limit = 100, includeTrackKey } = {}) {
   const q = dbQueries(db);
   const numericLimit = Number(limit);
@@ -522,19 +536,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
     }
 
     const included = q.prepare(`listTracks:include:${stationId ? 'station' : 'all'}`, `
-      select
-        p.track_key,
-        min(p.artist) as artist,
-        min(p.title) as title,
-        count(*) as total_plays,
-        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
-        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
-        min(p.played_at_utc) as first_played_at_utc,
-        max(p.played_at_utc) as last_played_at_utc,
-        min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence,
-        min(m.external_url) as external_url,
-        min(m.preview_url) as preview_url
+      select ${LIST_TRACKS_SELECT}
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where ${where.join(' and ')}
@@ -551,19 +553,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
 
   if (stationId && query) {
     return withIncludedTrack(run('listTracks:stationQuery', `
-      select
-        p.track_key,
-        min(p.artist) as artist,
-        min(p.title) as title,
-        count(*) as total_plays,
-        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
-        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
-        min(p.played_at_utc) as first_played_at_utc,
-        max(p.played_at_utc) as last_played_at_utc,
-        min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence,
-        min(m.external_url) as external_url,
-        min(m.preview_url) as preview_url
+      select ${LIST_TRACKS_SELECT}
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where p.station_id = ?
@@ -575,19 +565,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
 
   if (stationId) {
     return withIncludedTrack(run('listTracks:station', `
-      select
-        p.track_key,
-        min(p.artist) as artist,
-        min(p.title) as title,
-        count(*) as total_plays,
-        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
-        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
-        min(p.played_at_utc) as first_played_at_utc,
-        max(p.played_at_utc) as last_played_at_utc,
-        min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence,
-        min(m.external_url) as external_url,
-        min(m.preview_url) as preview_url
+      select ${LIST_TRACKS_SELECT}
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where p.station_id = ?
@@ -598,19 +576,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
 
   if (query) {
     return withIncludedTrack(run('listTracks:query', `
-      select
-        p.track_key,
-        min(p.artist) as artist,
-        min(p.title) as title,
-        count(*) as total_plays,
-        count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
-        round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
-        min(p.played_at_utc) as first_played_at_utc,
-        max(p.played_at_utc) as last_played_at_utc,
-        min(m.release_date_utc) as release_date_utc,
-        min(m.verification_confidence) as verification_confidence,
-        min(m.external_url) as external_url,
-        min(m.preview_url) as preview_url
+      select ${LIST_TRACKS_SELECT}
       from plays p
       left join track_metadata m on m.track_key = p.track_key
       where p.artist like ? or p.title like ?
@@ -620,19 +586,7 @@ export function listTracks(db, { query = '', stationId, limit = 100, includeTrac
   }
 
   return withIncludedTrack(run('listTracks:all', `
-    select
-      p.track_key,
-      min(p.artist) as artist,
-      min(p.title) as title,
-      count(*) as total_plays,
-      count(distinct substr(p.played_at_utc, 1, 10)) as active_days,
-      round((count(*) * 1.0) / nullif(count(distinct substr(p.played_at_utc, 1, 10)), 0), 2) as plays_per_day,
-      min(p.played_at_utc) as first_played_at_utc,
-      max(p.played_at_utc) as last_played_at_utc,
-      min(m.release_date_utc) as release_date_utc,
-      min(m.verification_confidence) as verification_confidence,
-      min(m.external_url) as external_url,
-      min(m.preview_url) as preview_url
+    select ${LIST_TRACKS_SELECT}
     from plays p
     left join track_metadata m on m.track_key = p.track_key
     group by p.track_key
@@ -906,11 +860,14 @@ export function dedupeStationByMinGapSeconds(db, stationId, minGapSeconds = 60) 
   }
 
   if (toDelete.length) {
-    const delStmt = q.prepare('dedupeStationByMinGapSeconds:deleteById', 'delete from plays where id = ?');
-    const tx = db.transaction((ids) => {
-      for (const id of ids) delStmt.run(id);
+    const CHUNK = 500;
+    const tx = db.transaction(() => {
+      for (let i = 0; i < toDelete.length; i += CHUNK) {
+        const chunk = toDelete.slice(i, i + CHUNK);
+        db.prepare(`delete from plays where id in (${chunk.map(() => '?').join(',')})`).run(...chunk);
+      }
     });
-    tx(toDelete);
+    tx();
   }
 
   const after = q.prepare('dedupeStationByMinGapSeconds:after', 'select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;

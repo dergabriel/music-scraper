@@ -50,6 +50,7 @@ import { DlfNovaParser } from './parsers/dlfNova.js';
 import { FluxFmParser } from './parsers/fluxfm.js';
 import { NrwLokalradiosJsonParser } from './parsers/nrwlokalradiosJson.js';
 import { RadioMenuParser } from './parsers/radioMenu.js';
+import { GenericHtmlOrOnlineradioboxParser } from './parsers/genericHtmlOrOnlineradiobox.js';
 import { TrackVerifier } from './trackVerifier.js';
 import {
   DEFAULT_DEDUP_COOLDOWN_SECONDS,
@@ -68,14 +69,7 @@ export function parserForStation(station) {
     case 'generic_html':
       return new GenericHtmlParser({ timezone: station.timezone });
     case 'generic_html_or_onlineradiobox':
-      return {
-        parse(html, sourceUrl) {
-          const onlineradiobox = new OnlineradioboxParser({ timezone: station.timezone });
-          const generic = new GenericHtmlParser({ timezone: station.timezone });
-          const first = onlineradiobox.parse(html, sourceUrl);
-          return first.length ? first : generic.parse(html, sourceUrl);
-        }
-      };
+      return new GenericHtmlOrOnlineradioboxParser({ timezone: station.timezone });
     case 'nrwlokalradios_json':
       return new NrwLokalradiosJsonParser({ timezone: station.timezone });
     case 'radiomenu':
@@ -292,6 +286,76 @@ function trackStableIdentity(metaRow) {
   return { kind: 'none', key: null };
 }
 
+/**
+ * Performs a single track-key remap inside an existing db.transaction():
+ * moves all plays, rebuilds daily stats, cleans up backpool and metadata.
+ * Returns { playsUpdated, dailyRowsRebuilt, metadataUpdated }.
+ */
+function mergeTrackPair(db, { winnerKey, loserKey, artist, title }, metadataByTrackKey) {
+  const winnerMeta = metadataByTrackKey.get(winnerKey) ?? null;
+  const loserMeta = metadataByTrackKey.get(loserKey) ?? null;
+
+  const playsUpdated = db.prepare(`
+    update plays
+    set track_key = ?, artist = ?, title = ?
+    where track_key = ?
+  `).run(winnerKey, artist, title, loserKey).changes;
+
+  let dailyRowsRebuilt = 0;
+
+  const dailyByStation = db.prepare(`
+    select date_berlin, station_id, sum(plays) as plays
+    from daily_track_stats
+    where track_key in (?, ?)
+    group by date_berlin, station_id
+  `).all(winnerKey, loserKey);
+  if (dailyByStation.length) {
+    db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(winnerKey, loserKey);
+    const insertDaily = db.prepare(`
+      insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
+      values (?, ?, ?, ?, ?, ?)
+    `);
+    for (const row of dailyByStation) {
+      insertDaily.run(row.date_berlin, row.station_id, winnerKey, artist, title, Number(row.plays || 0));
+      dailyRowsRebuilt += 1;
+    }
+  }
+
+  const dailyOverall = db.prepare(`
+    select date_berlin, sum(plays) as plays
+    from daily_overall_track_stats
+    where track_key in (?, ?)
+    group by date_berlin
+  `).all(winnerKey, loserKey);
+  if (dailyOverall.length) {
+    db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(winnerKey, loserKey);
+    const insertOverall = db.prepare(`
+      insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
+      values (?, ?, ?, ?, ?)
+    `);
+    for (const row of dailyOverall) {
+      insertOverall.run(row.date_berlin, winnerKey, artist, title, Number(row.plays || 0));
+    }
+  }
+
+  db.prepare('delete from backpool_track_catalog where track_key = ?').run(loserKey);
+
+  let metadataUpdated = 0;
+  const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
+  if (chosenMeta) {
+    const mergedMeta = { ...chosenMeta, track_key: winnerKey, artist, title };
+    upsertTrackMetadata(db, mergedMeta);
+    metadataByTrackKey.set(winnerKey, mergedMeta);
+    metadataUpdated = 1;
+  }
+  if (loserMeta) {
+    db.prepare('delete from track_metadata where track_key = ?').run(loserKey);
+    metadataByTrackKey.delete(loserKey);
+  }
+
+  return { playsUpdated, dailyRowsRebuilt, metadataUpdated };
+}
+
 export function runTrackOrientationMaintenance({
   dbPath,
   dryRun = false,
@@ -361,70 +425,14 @@ export function runTrackOrientationMaintenance({
   if (!dryRun && selected.length > 0) {
     const tx = db.transaction(() => {
       for (const pair of selected) {
-        const winnerMeta = metadataByTrackKey.get(pair.winnerKey) ?? null;
-        const loserMeta = metadataByTrackKey.get(pair.loserKey) ?? null;
-
-        const playChanges = db.prepare(`
-          update plays
-          set track_key = ?, artist = ?, title = ?
-          where track_key = ?
-        `).run(pair.winnerKey, pair.winnerArtist, pair.winnerTitle, pair.loserKey).changes;
-        playsUpdated += playChanges;
-
-        const dailyByStation = db.prepare(`
-          select date_berlin, station_id, sum(plays) as plays
-          from daily_track_stats
-          where track_key in (?, ?)
-          group by date_berlin, station_id
-        `).all(pair.winnerKey, pair.loserKey);
-        if (dailyByStation.length) {
-          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(pair.winnerKey, pair.loserKey);
-          const insertDaily = db.prepare(`
-            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyByStation) {
-            insertDaily.run(row.date_berlin, row.station_id, pair.winnerKey, pair.winnerArtist, pair.winnerTitle, Number(row.plays || 0));
-            dailyRowsRebuilt += 1;
-          }
-        }
-
-        const dailyOverall = db.prepare(`
-          select date_berlin, sum(plays) as plays
-          from daily_overall_track_stats
-          where track_key in (?, ?)
-          group by date_berlin
-        `).all(pair.winnerKey, pair.loserKey);
-        if (dailyOverall.length) {
-          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(pair.winnerKey, pair.loserKey);
-          const insertOverall = db.prepare(`
-            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyOverall) {
-            insertOverall.run(row.date_berlin, pair.winnerKey, pair.winnerArtist, pair.winnerTitle, Number(row.plays || 0));
-          }
-        }
-
-        db.prepare('delete from backpool_track_catalog where track_key = ?').run(pair.loserKey);
-
-        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
-        if (chosenMeta) {
-          const mergedMeta = {
-            ...chosenMeta,
-            track_key: pair.winnerKey,
-            artist: pair.winnerArtist,
-            title: pair.winnerTitle
-          };
-          upsertTrackMetadata(db, mergedMeta);
-          metadataByTrackKey.set(pair.winnerKey, mergedMeta);
-          metadataUpdated += 1;
-        }
-        if (loserMeta) {
-          db.prepare('delete from track_metadata where track_key = ?').run(pair.loserKey);
-          metadataByTrackKey.delete(pair.loserKey);
-        }
-
+        const r = mergeTrackPair(
+          db,
+          { winnerKey: pair.winnerKey, loserKey: pair.loserKey, artist: pair.winnerArtist, title: pair.winnerTitle },
+          metadataByTrackKey
+        );
+        playsUpdated += r.playsUpdated;
+        dailyRowsRebuilt += r.dailyRowsRebuilt;
+        metadataUpdated += r.metadataUpdated;
         merged += 1;
       }
     });
@@ -843,77 +851,20 @@ export function runMergeDuplicateTracksMaintenance({
   if (!dryRun && mappings.length > 0) {
     const tx = db.transaction(() => {
       for (const map of mappings) {
-        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
-        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
-
-        const changes = db.prepare(`
-          update plays
-          set track_key = ?, artist = ?, title = ?
-          where track_key = ?
-        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
-        playsUpdated += changes;
-
-        const dailyByStation = db.prepare(`
-          select date_berlin, station_id, sum(plays) as plays
-          from daily_track_stats
-          where track_key in (?, ?)
-          group by date_berlin, station_id
-        `).all(map.newKey, map.oldKey);
-        if (dailyByStation.length) {
-          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertDaily = db.prepare(`
-            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyByStation) {
-            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
-            dailyRowsRebuilt += 1;
-          }
-        }
-
-        const dailyOverall = db.prepare(`
-          select date_berlin, sum(plays) as plays
-          from daily_overall_track_stats
-          where track_key in (?, ?)
-          group by date_berlin
-        `).all(map.newKey, map.oldKey);
-        if (dailyOverall.length) {
-          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertOverall = db.prepare(`
-            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyOverall) {
-            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
-          }
-        }
-
-        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
-
-        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
-        if (chosenMeta) {
-          const mergedMeta = {
-            ...chosenMeta,
-            track_key: map.newKey,
-            artist: map.artist,
-            title: map.title
-          };
-          upsertTrackMetadata(db, mergedMeta);
-          metadataByTrackKey.set(map.newKey, mergedMeta);
-          metadataUpdated += 1;
-        }
-        if (loserMeta) {
-          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
-          metadataByTrackKey.delete(map.oldKey);
-        }
-
+        const r = mergeTrackPair(
+          db,
+          { winnerKey: map.newKey, loserKey: map.oldKey, artist: map.artist, title: map.title },
+          metadataByTrackKey
+        );
+        playsUpdated += r.playsUpdated;
+        dailyRowsRebuilt += r.dailyRowsRebuilt;
+        metadataUpdated += r.metadataUpdated;
         upsertCanonicalMap(db, {
           canonical_title: map.canonical_title,
           canonical_primary_artist: map.canonical_primary_artist,
           canonical_track_key: map.newKey,
           updated_at_utc: nowIso
         });
-
         merged += 1;
       }
     });
@@ -1140,65 +1091,19 @@ export function runManualTrackMerge({
   let metadataUpdated = 0;
   const nowIso = isoUtcNow();
 
+  const metadataByTrackKey = new Map();
+  if (winnerMeta) metadataByTrackKey.set(winnerKey, winnerMeta);
+  if (loserMeta) metadataByTrackKey.set(loserKey, loserMeta);
+
   const tx = db.transaction(() => {
-    playsUpdated = db.prepare(`
-      update plays
-      set track_key = ?, artist = ?, title = ?
-      where track_key = ?
-    `).run(winnerKey, finalArtist, finalTitle, loserKey).changes;
-
-    const dailyByStation = db.prepare(`
-      select date_berlin, station_id, sum(plays) as plays
-      from daily_track_stats
-      where track_key in (?, ?)
-      group by date_berlin, station_id
-    `).all(winnerKey, loserKey);
-    if (dailyByStation.length) {
-      db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(winnerKey, loserKey);
-      const insertDaily = db.prepare(`
-        insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
-        values (?, ?, ?, ?, ?, ?)
-      `);
-      for (const row of dailyByStation) {
-        insertDaily.run(row.date_berlin, row.station_id, winnerKey, finalArtist, finalTitle, Number(row.plays || 0));
-        dailyRowsRebuilt += 1;
-      }
-    }
-
-    const dailyOverall = db.prepare(`
-      select date_berlin, sum(plays) as plays
-      from daily_overall_track_stats
-      where track_key in (?, ?)
-      group by date_berlin
-    `).all(winnerKey, loserKey);
-    if (dailyOverall.length) {
-      db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(winnerKey, loserKey);
-      const insertOverall = db.prepare(`
-        insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
-        values (?, ?, ?, ?, ?)
-      `);
-      for (const row of dailyOverall) {
-        insertOverall.run(row.date_berlin, winnerKey, finalArtist, finalTitle, Number(row.plays || 0));
-      }
-    }
-
-    db.prepare('delete from backpool_track_catalog where track_key = ?').run(loserKey);
-
-    const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
-    if (chosenMeta) {
-      const mergedMeta = {
-        ...chosenMeta,
-        track_key: winnerKey,
-        artist: finalArtist,
-        title: finalTitle
-      };
-      upsertTrackMetadata(db, mergedMeta);
-      metadataUpdated = 1;
-    }
-    if (loserMeta) {
-      db.prepare('delete from track_metadata where track_key = ?').run(loserKey);
-    }
-
+    const r = mergeTrackPair(
+      db,
+      { winnerKey, loserKey, artist: finalArtist, title: finalTitle },
+      metadataByTrackKey
+    );
+    playsUpdated = r.playsUpdated;
+    dailyRowsRebuilt = r.dailyRowsRebuilt;
+    metadataUpdated = r.metadataUpdated;
     if (canonicalTitle && canonicalPrimary) {
       upsertCanonicalMap(db, {
         canonical_title: canonicalTitle,
@@ -1265,70 +1170,14 @@ export function runCanonicalArtistMaintenance({ dbPath, dryRun = false, maxPairs
   if (!dryRun && selected.length > 0) {
     const tx = db.transaction(() => {
       for (const map of selected) {
-        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
-        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
-
-        const changes = db.prepare(`
-          update plays
-          set track_key = ?, artist = ?, title = ?
-          where track_key = ?
-        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
-        playsUpdated += changes;
-
-        const dailyByStation = db.prepare(`
-          select date_berlin, station_id, sum(plays) as plays
-          from daily_track_stats
-          where track_key in (?, ?)
-          group by date_berlin, station_id
-        `).all(map.newKey, map.oldKey);
-        if (dailyByStation.length) {
-          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertDaily = db.prepare(`
-            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyByStation) {
-            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
-            dailyRowsRebuilt += 1;
-          }
-        }
-
-        const dailyOverall = db.prepare(`
-          select date_berlin, sum(plays) as plays
-          from daily_overall_track_stats
-          where track_key in (?, ?)
-          group by date_berlin
-        `).all(map.newKey, map.oldKey);
-        if (dailyOverall.length) {
-          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertOverall = db.prepare(`
-            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyOverall) {
-            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
-          }
-        }
-
-        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
-
-        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
-        if (chosenMeta) {
-          const mergedMeta = {
-            ...chosenMeta,
-            track_key: map.newKey,
-            artist: map.artist,
-            title: map.title
-          };
-          upsertTrackMetadata(db, mergedMeta);
-          metadataByTrackKey.set(map.newKey, mergedMeta);
-          metadataUpdated += 1;
-        }
-        if (loserMeta) {
-          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
-          metadataByTrackKey.delete(map.oldKey);
-        }
-
+        const r = mergeTrackPair(
+          db,
+          { winnerKey: map.newKey, loserKey: map.oldKey, artist: map.artist, title: map.title },
+          metadataByTrackKey
+        );
+        playsUpdated += r.playsUpdated;
+        dailyRowsRebuilt += r.dailyRowsRebuilt;
+        metadataUpdated += r.metadataUpdated;
         merged += 1;
       }
     });
@@ -1408,70 +1257,14 @@ export function runPromoMarkerMaintenance({ dbPath, dryRun = false, maxPairs = 5
   if (!dryRun && selected.length > 0) {
     const tx = db.transaction(() => {
       for (const map of selected) {
-        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
-        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
-
-        const changes = db.prepare(`
-          update plays
-          set track_key = ?, artist = ?, title = ?
-          where track_key = ?
-        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
-        playsUpdated += changes;
-
-        const dailyByStation = db.prepare(`
-          select date_berlin, station_id, sum(plays) as plays
-          from daily_track_stats
-          where track_key in (?, ?)
-          group by date_berlin, station_id
-        `).all(map.newKey, map.oldKey);
-        if (dailyByStation.length) {
-          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertDaily = db.prepare(`
-            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyByStation) {
-            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
-            dailyRowsRebuilt += 1;
-          }
-        }
-
-        const dailyOverall = db.prepare(`
-          select date_berlin, sum(plays) as plays
-          from daily_overall_track_stats
-          where track_key in (?, ?)
-          group by date_berlin
-        `).all(map.newKey, map.oldKey);
-        if (dailyOverall.length) {
-          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertOverall = db.prepare(`
-            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyOverall) {
-            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
-          }
-        }
-
-        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
-
-        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
-        if (chosenMeta) {
-          const mergedMeta = {
-            ...chosenMeta,
-            track_key: map.newKey,
-            artist: map.artist,
-            title: map.title
-          };
-          upsertTrackMetadata(db, mergedMeta);
-          metadataByTrackKey.set(map.newKey, mergedMeta);
-          metadataUpdated += 1;
-        }
-        if (loserMeta) {
-          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
-          metadataByTrackKey.delete(map.oldKey);
-        }
-
+        const r = mergeTrackPair(
+          db,
+          { winnerKey: map.newKey, loserKey: map.oldKey, artist: map.artist, title: map.title },
+          metadataByTrackKey
+        );
+        playsUpdated += r.playsUpdated;
+        dailyRowsRebuilt += r.dailyRowsRebuilt;
+        metadataUpdated += r.metadataUpdated;
         merged += 1;
       }
     });
@@ -1577,70 +1370,14 @@ export function runItunesCanonicalMaintenance({
   if (!dryRun && mappings.length > 0) {
     const tx = db.transaction(() => {
       for (const map of mappings) {
-        const winnerMeta = metadataByTrackKey.get(map.newKey) ?? null;
-        const loserMeta = metadataByTrackKey.get(map.oldKey) ?? null;
-
-        const changes = db.prepare(`
-          update plays
-          set track_key = ?, artist = ?, title = ?
-          where track_key = ?
-        `).run(map.newKey, map.artist, map.title, map.oldKey).changes;
-        playsUpdated += changes;
-
-        const dailyByStation = db.prepare(`
-          select date_berlin, station_id, sum(plays) as plays
-          from daily_track_stats
-          where track_key in (?, ?)
-          group by date_berlin, station_id
-        `).all(map.newKey, map.oldKey);
-        if (dailyByStation.length) {
-          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertDaily = db.prepare(`
-            insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyByStation) {
-            insertDaily.run(row.date_berlin, row.station_id, map.newKey, map.artist, map.title, Number(row.plays || 0));
-            dailyRowsRebuilt += 1;
-          }
-        }
-
-        const dailyOverall = db.prepare(`
-          select date_berlin, sum(plays) as plays
-          from daily_overall_track_stats
-          where track_key in (?, ?)
-          group by date_berlin
-        `).all(map.newKey, map.oldKey);
-        if (dailyOverall.length) {
-          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(map.newKey, map.oldKey);
-          const insertOverall = db.prepare(`
-            insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays)
-            values (?, ?, ?, ?, ?)
-          `);
-          for (const row of dailyOverall) {
-            insertOverall.run(row.date_berlin, map.newKey, map.artist, map.title, Number(row.plays || 0));
-          }
-        }
-
-        db.prepare('delete from backpool_track_catalog where track_key = ?').run(map.oldKey);
-
-        const chosenMeta = preferredMetadataRow(winnerMeta, loserMeta);
-        if (chosenMeta) {
-          const mergedMeta = {
-            ...chosenMeta,
-            track_key: map.newKey,
-            artist: map.artist,
-            title: map.title
-          };
-          upsertTrackMetadata(db, mergedMeta);
-          metadataByTrackKey.set(map.newKey, mergedMeta);
-          metadataUpdated += 1;
-        }
-        if (loserMeta) {
-          db.prepare('delete from track_metadata where track_key = ?').run(map.oldKey);
-          metadataByTrackKey.delete(map.oldKey);
-        }
-
+        const r = mergeTrackPair(
+          db,
+          { winnerKey: map.newKey, loserKey: map.oldKey, artist: map.artist, title: map.title },
+          metadataByTrackKey
+        );
+        playsUpdated += r.playsUpdated;
+        dailyRowsRebuilt += r.dailyRowsRebuilt;
+        metadataUpdated += r.metadataUpdated;
         merged += 1;
       }
     });
@@ -2976,4 +2713,27 @@ export async function runBackpoolAnalysis({
     rows,
     mdPath
   };
+}
+
+/**
+ * Runs the full standard maintenance sequence in the correct order.
+ * Used by daily-job and api startup to avoid copy-pasting the sequence.
+ */
+export async function runAllMaintenance({ dbPath, releaseMaxLookups, logger }) {
+  runNoisePlayCleanup({ dbPath, logger });
+  runPromoMarkerMaintenance({ dbPath, logger });
+  runItunesCanonicalMaintenance({ dbPath, logger });
+  runCanonicalArtistMaintenance({ dbPath, logger });
+  runMergeDuplicateTracksMaintenance({ dbPath, logger });
+  runCanonicalMapRefreshMaintenance({ dbPath, logger });
+  runTrackOrientationMaintenance({ dbPath, logger });
+  await runReleaseDateBackfillMaintenance({
+    dbPath,
+    maxLookups: releaseMaxLookups,
+    minPlays: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_PLAYS || 1),
+    minConfidence: Number(process.env.YRPA_RELEASE_BACKFILL_MIN_CONFIDENCE || 0.55),
+    staleHours: Number(process.env.YRPA_RELEASE_BACKFILL_STALE_HOURS || 12),
+    includeChart: false,
+    logger
+  });
 }

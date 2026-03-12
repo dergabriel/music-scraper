@@ -228,6 +228,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/outliers?days=30&threshold=2.5&limit=100',
           'GET /api/stations/:stationId/profile?days=90',
           'POST /api/admin/merge-tracks {"winnerTrackKey":"...","loserTrackKey":"..."}',
+          'GET /api/reports/weekly-overview?weekStart=YYYY-MM-DD&limit=50',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&releaseYear=YYYY&maxReleaseAgeDays=730',
           'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationMinReleaseAgeDays=1095&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
@@ -1170,6 +1171,84 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       }
     },
 
+    weeklyOverview: (req, res) => {
+      try {
+        const weekStart = req.query.weekStart
+          ? String(safeQueryValue(req.query.weekStart))
+          : DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();
+        const limit = parseIntQuery(req.query.limit, { fallback: 50, min: 1, max: 200, fieldName: 'limit' });
+        const ranges = buildWeekRanges(weekStart);
+        const db = sharedDb;
+        try {
+          const topTracks = db.prepare(`
+            select
+              track_key,
+              min(artist) as artist,
+              min(title) as title,
+              count(*) as plays,
+              count(distinct station_id) as station_count
+            from plays
+            where played_at_utc >= ? and played_at_utc < ?
+            group by track_key
+            order by plays desc
+            limit ?
+          `).all(ranges.current.startUtcIso, ranges.current.endUtcIso, limit);
+
+          const prevPlayMap = new Map(
+            db.prepare(`
+              select track_key, count(*) as plays
+              from plays
+              where played_at_utc >= ? and played_at_utc < ?
+              group by track_key
+            `).all(ranges.previous.startUtcIso, ranges.previous.endUtcIso)
+              .map((r) => [r.track_key, Number(r.plays)])
+          );
+
+          const stationTotals = db.prepare(`
+            select station_id, count(*) as plays, count(distinct track_key) as unique_tracks
+            from plays
+            where played_at_utc >= ? and played_at_utc < ?
+            group by station_id
+            order by plays desc
+          `).all(ranges.current.startUtcIso, ranges.current.endUtcIso);
+
+          const prevStationTotals = new Map(
+            db.prepare(`
+              select station_id, count(*) as plays
+              from plays
+              where played_at_utc >= ? and played_at_utc < ?
+              group by station_id
+            `).all(ranges.previous.startUtcIso, ranges.previous.endUtcIso)
+              .map((r) => [r.station_id, Number(r.plays)])
+          );
+
+          const totalPlays = stationTotals.reduce((sum, r) => sum + Number(r.plays), 0);
+          const prevTotalPlays = Array.from(prevPlayMap.values()).reduce((a, b) => a + b, 0);
+
+          return res.json({
+            weekStart,
+            weekEnd: ranges.current.endBerlin.toISODate(),
+            totalPlays,
+            prevTotalPlays,
+            stationCount: stationTotals.length,
+            stationTotals: stationTotals.map((r) => ({
+              ...r,
+              prev_plays: prevStationTotals.get(r.station_id) ?? 0
+            })),
+            topTracks: topTracks.map((t) => ({
+              ...t,
+              prev_plays: prevPlayMap.get(t.track_key) ?? 0,
+              delta: Number(t.plays) - (prevPlayMap.get(t.track_key) ?? 0)
+            }))
+          });
+        } finally {
+          /* shared db: closed on shutdown */
+        }
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
     stationReport: (req, res) => {
       try {
         const stationId = req.params.stationId;
@@ -1263,6 +1342,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/backpool', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'backpool.html')));
   app.get('/tracks', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'tracks.html')));
   app.get('/new-titles', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'new-titles.html')));
+  app.get('/weekly-reports', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'weekly-reports.html')));
 
   app.get('/api/health', handlers.health);
   app.get('/api/docs', handlers.docs);
@@ -1285,6 +1365,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/outliers', handlers.outliers);
   app.get('/api/stations/:stationId/profile', handlers.stationProfile);
   app.post('/api/admin/merge-tracks', handlers.adminMergeTracks);
+  app.get('/api/reports/weekly-overview', handlers.weeklyOverview);
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
   app.get('/api/insights/backpool', handlers.backpool);

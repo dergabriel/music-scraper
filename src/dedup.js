@@ -1,4 +1,5 @@
 import { canonicalTitleKey, canonicalizeArtist } from './normalize.js';
+import { createDbQueries } from './db.js';
 
 export const DEFAULT_DEDUP_COOLDOWN_SECONDS = 15 * 60;
 
@@ -38,7 +39,7 @@ export function shouldDedupByCooldown({
     return { deduped: false, lastCountedAtUtc: null, deltaSeconds: null };
   }
 
-  const row = db.prepare(`
+  const row = createDbQueries(db).prepare('shouldDedupByCooldown', `
     select max(played_at_utc) as last_counted_at_utc
     from plays
     where station_id = ?
