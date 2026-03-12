@@ -1,4 +1,3 @@
-import { berlinTodayIsoDate, shiftBerlinIsoDate } from './date-berlin.js';
 import {
   React,
   createRoot,
@@ -13,627 +12,440 @@ import {
   useUiColors,
   Icons
 } from './horizon-lib.js';
-import {
-  looksLikeNonMusicTitle,
-  dedupeTracksByIdentity,
-  displayTrackIdentity,
-  matchesSearch,
-  trackIdentity
-} from './music-quality.js';
 
-const PRESETS = {
-  easy: {
-    label: 'Locker',
-    minDaily: 0.15,
-    maxDaily: 2.0,
-    minActiveDays: 2,
-    minSpanDays: 7,
-    minReleaseAgeDays: 1095,
-    minTrackAgeDays: 30,
-    minConfidence: 0.65,
-    hint: 'Mehr Kandidaten, weiterhin nur ältere Songs.'
-  },
-  balanced: {
-    label: 'Standard',
-    minDaily: 0.25,
-    maxDaily: 1.6,
-    minActiveDays: 3,
-    minSpanDays: 10,
-    minReleaseAgeDays: 1095,
-    minTrackAgeDays: 45,
-    minConfidence: 0.72,
-    hint: 'Empfohlen: guter Mix aus Menge und Qualität.'
-  },
-  strict: {
-    label: 'Streng',
-    minDaily: 0.35,
-    maxDaily: 1.2,
-    minActiveDays: 4,
-    minSpanDays: 14,
-    minReleaseAgeDays: 1460,
-    minTrackAgeDays: 90,
-    minConfidence: 0.78,
-    hint: 'Nur sehr stabile und klar alte Backpool-Songs.'
-  }
-};
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-function toFixedComma(value, digits = 2) {
-  return Number(value || 0).toFixed(digits).replace('.', ',');
-}
-
-function dayAgeText(days) {
-  if (!Number.isFinite(days)) return '-';
-  if (days < 365) return `${formatNumber(days)} Tage`;
-  return `${toFixedComma(days / 365, 1)} Jahre`;
-}
-
-function fmtDateOnly(iso) {
+function fmtDate(iso) {
   if (!iso) return '-';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return String(iso);
-  return date.toLocaleDateString('de-DE');
+  return new Date(iso).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-function PreviewControl({ previewUrl, externalUrl, compact = false }) {
-  if (previewUrl) {
-    return html`
-      <${Chakra.HStack} spacing="2" align="center">
-        <audio controls preload="none" src=${previewUrl} style=${{ height: '30px', width: compact ? '170px' : '220px' }} />
-        ${externalUrl
-          ? html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">iTunes<//>`
-          : null}
-      <//>
-    `;
-  }
-
-  if (externalUrl) {
-    return html`<${Chakra.Link} href=${externalUrl} target="_blank" rel="noreferrer" color="teal.500">Titelseite<//>`;
-  }
-
-  return html`<${Chakra.Tag} size="sm" colorScheme="orange" borderRadius="999px">Kein Preview<//>`;
+function fmtPlaysPerDay(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '-';
+  return n.toFixed(2).replace('.', ',');
 }
 
-function toIsoDateSafe(value) {
-  const str = String(value || '');
-  return /^\d{4}-\d{2}-\d{2}$/.test(str) ? str : null;
+function ageDays(iso) {
+  if (!iso) return null;
+  const d = Math.floor((Date.now() - Date.parse(iso)) / 86400000);
+  return Number.isFinite(d) && d >= 0 ? d : null;
 }
 
-async function copyToClipboard(value) {
-  const text = String(value || '').trim();
-  if (!text) return;
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.style.position = 'fixed';
-  area.style.opacity = '0';
-  document.body.appendChild(area);
-  area.focus();
-  area.select();
-  document.execCommand('copy');
-  area.remove();
+function ageDaysText(days) {
+  if (days === null || !Number.isFinite(days)) return '-';
+  if (days < 30) return `${days} T`;
+  if (days < 365) return `${Math.round(days / 30)} M`;
+  return `${(days / 365).toFixed(1).replace('.', ',')} J`;
 }
 
-function buildProcessed(data, options) {
-  const rows = Array.isArray(data?.rows) ? data.rows : [];
-  const reasons = {
-    trend: 0,
-    noisy: 0,
-    lowConfidence: 0,
-    tooYoungRelease: 0,
-    tooYoungStation: 0,
-    search: 0
-  };
-
-  const perStation = [];
-  const allTrackMap = new Map();
-
-  for (const stationRow of rows) {
-    const stationName = stationRow.stationName || stationRow.stationId || '-';
-    const rotationTracks = Array.isArray(stationRow.rotationBackpoolTracks) ? stationRow.rotationBackpoolTracks : [];
-    const trendRows = [
-      ...(Array.isArray(stationRow.resurgenceTracks) ? stationRow.resurgenceTracks : []),
-      ...(Array.isArray(stationRow.recentTracks) ? stationRow.recentTracks : []),
-      ...(Array.isArray(stationRow.hotRotationTracks) ? stationRow.hotRotationTracks : [])
-    ];
-    const excludedTrendIds = new Set(trendRows.map((row) => trackIdentity(row)));
-    const excludedTrendDisplayIds = new Set(trendRows.map((row) => displayTrackIdentity(row)));
-
-    const stationTracks = [];
-    for (const track of rotationTracks) {
-      const exactId = trackIdentity(track);
-      const id = displayTrackIdentity(track);
-      const noisy = looksLikeNonMusicTitle(track.artist, track.title);
-      const lowConfidence = Number.isFinite(Number(track.verificationConfidence))
-        ? Number(track.verificationConfidence) < Number(options.minConfidence || 0)
-        : false;
-      const tooYoungRelease = Number.isFinite(Number(track.releaseAgeDays))
-        ? Number(track.releaseAgeDays) < Number(options.minReleaseAgeDays || 0)
-        : false;
-      const tooYoungStation = Number.isFinite(Number(track.stationAgeDays))
-        ? Number(track.stationAgeDays) < Number(options.minTrackAgeDays || 0)
-        : false;
-      const trendExcluded = excludedTrendIds.has(exactId) || excludedTrendDisplayIds.has(id);
-
-      let excluded = false;
-      if (trendExcluded) {
-        reasons.trend += 1;
-        excluded = true;
-      }
-      if (!excluded && options.excludeNoise && noisy) {
-        reasons.noisy += 1;
-        excluded = true;
-      }
-      if (!excluded && options.enforceConfidence && lowConfidence) {
-        reasons.lowConfidence += 1;
-        excluded = true;
-      }
-      if (!excluded && options.enforceReleaseAge && tooYoungRelease) {
-        reasons.tooYoungRelease += 1;
-        excluded = true;
-      }
-      if (!excluded && options.enforceTrackAge && tooYoungStation) {
-        reasons.tooYoungStation += 1;
-        excluded = true;
-      }
-      if (excluded) continue;
-
-      const enriched = {
-        ...track,
-        _id: id,
-        trackKey: track.trackKey || track.track_key || null,
-        stationName,
-        stationId: stationRow.stationId,
-        plays: Number(track.plays || 0),
-        playsPerDay: Number(track.playsPerDay || 0),
-        activeDays: Number(track.activeDays || 0),
-        spanDays: Number(track.spanDays || 0),
-        cadenceDays: Number(track.cadenceDays || 0)
-      };
-
-      if (!matchesSearch(enriched, options.search)) {
-        reasons.search += 1;
-        continue;
-      }
-
-      stationTracks.push(enriched);
-    }
-
-    const stationTracksDeduped = dedupeTracksByIdentity(stationTracks, { identityFn: displayTrackIdentity }).map((row) => ({
-      ...row,
-      _id: displayTrackIdentity(row)
-    }));
-
-    for (const enriched of stationTracksDeduped) {
-      const id = displayTrackIdentity(enriched);
-      if (!allTrackMap.has(id)) {
-        allTrackMap.set(id, {
-          ...enriched,
-          stationNames: new Set([stationName]),
-          stationIds: new Set([stationRow.stationId]),
-          stationCount: 1,
-          playsPerDaySum: Number(enriched.playsPerDay || 0),
-          cadenceSamples: Number.isFinite(enriched.cadenceDays) && enriched.cadenceDays > 0 ? [enriched.cadenceDays] : []
-        });
-      } else {
-        const entry = allTrackMap.get(id);
-        entry.plays += Number(enriched.plays || 0);
-        entry.activeDays = Math.max(entry.activeDays, Number(enriched.activeDays || 0));
-        entry.spanDays = Math.max(entry.spanDays, Number(enriched.spanDays || 0));
-        entry.playsPerDaySum += Number(enriched.playsPerDay || 0);
-        if (Number.isFinite(enriched.cadenceDays) && enriched.cadenceDays > 0) entry.cadenceSamples.push(enriched.cadenceDays);
-        entry.stationNames.add(stationName);
-        entry.stationIds.add(stationRow.stationId);
-      }
-    }
-
-    stationTracksDeduped.sort((a, b) => b.plays - a.plays || b.playsPerDay - a.playsPerDay);
-    perStation.push({
-      stationId: stationRow.stationId,
-      stationName,
-      tracks: stationTracksDeduped,
-      totalPlays: stationTracksDeduped.reduce((sum, row) => sum + Number(row.plays || 0), 0)
-    });
-  }
-
-  const allTracks = Array.from(allTrackMap.values()).map((entry) => {
-    const stationNames = Array.from(entry.stationNames).sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }));
-    const stationCount = stationNames.length;
-    const avgCadence = entry.cadenceSamples.length
-      ? entry.cadenceSamples.reduce((sum, v) => sum + v, 0) / entry.cadenceSamples.length
-      : null;
-    return {
-      ...entry,
-      stationNames,
-      stationCount,
-      playsPerDay: stationCount > 0 ? entry.playsPerDaySum / stationCount : 0,
-      cadenceDays: avgCadence
-    };
-  }).sort((a, b) => b.plays - a.plays || b.playsPerDay - a.playsPerDay);
-
-  perStation.sort((a, b) => b.totalPlays - a.totalPlays);
-
-  return {
-    allTracks,
-    perStation,
-    reasons
-  };
+function matchSearch(row, q) {
+  if (!q) return true;
+  const lq = q.toLowerCase();
+  return (
+    String(row.artist || '').toLowerCase().includes(lq) ||
+    String(row.title || '').toLowerCase().includes(lq)
+  );
 }
 
-function BackpoolApp() {
-  const ui = useUiColors();
+// ── TrackRow ──────────────────────────────────────────────────────────────────
 
-  const today = berlinTodayIsoDate();
-  const [from, setFrom] = React.useState(shiftBerlinIsoDate(today, -365));
-  const [to, setTo] = React.useState(today);
-  const [stationId, setStationId] = React.useState('');
-  const [presetId, setPresetId] = React.useState('balanced');
-  const [minPlays, setMinPlays] = React.useState('1');
-  const [top, setTop] = React.useState('500');
-  const [search, setSearch] = React.useState('');
-  const [viewMode, setViewMode] = React.useState('global');
-
-  const [excludeNoise, setExcludeNoise] = React.useState(true);
-  const [enforceConfidence, setEnforceConfidence] = React.useState(true);
-  const [enforceReleaseAge, setEnforceReleaseAge] = React.useState(true);
-  const [enforceTrackAge, setEnforceTrackAge] = React.useState(true);
-
-  const [stations, setStations] = React.useState([]);
-  const [rawData, setRawData] = React.useState(null);
-  const [loading, setLoading] = React.useState(false);
-  const [errorText, setErrorText] = React.useState('');
-
-  const debouncedSearch = useDebouncedValue(search, 240);
-  const preset = PRESETS[presetId] || PRESETS.balanced;
-
-  const processed = React.useMemo(() => {
-    return buildProcessed(rawData || {}, {
-      search: debouncedSearch,
-      excludeNoise,
-      enforceConfidence,
-      enforceReleaseAge,
-      enforceTrackAge,
-      minConfidence: preset.minConfidence,
-      minReleaseAgeDays: preset.minReleaseAgeDays,
-      minTrackAgeDays: preset.minTrackAgeDays
-    });
-  }, [rawData, debouncedSearch, excludeNoise, enforceConfidence, enforceReleaseAge, enforceTrackAge, preset]);
-
-  const kpis = React.useMemo(() => {
-    const allTracks = processed.allTracks;
-    const plays = allTracks.reduce((sum, row) => sum + Number(row.plays || 0), 0);
-    const avgPlaysPerDay = allTracks.length
-      ? allTracks.reduce((sum, row) => sum + Number(row.playsPerDay || 0), 0) / allTracks.length
-      : 0;
-    const senderCount = new Set(allTracks.flatMap((row) => row.stationNames || [])).size;
-    return {
-      tracks: allTracks.length,
-      plays,
-      avgPlaysPerDay,
-      senderCount
-    };
-  }, [processed.allTracks]);
-
-  const recentBackpool = React.useMemo(() => {
-    const cutoff = shiftBerlinIsoDate(to || berlinTodayIsoDate(), -13);
-    return (processed.allTracks || [])
-      .filter((row) => {
-        const first = toIsoDateSafe(row.firstPlayedDate || row.first_played_at_utc?.slice?.(0, 10));
-        return Boolean(first && first >= cutoff);
-      })
-      .sort((a, b) => String(b.firstPlayedDate || '').localeCompare(String(a.firstPlayedDate || '')))
-      .slice(0, 12);
-  }, [processed.allTracks, to]);
-
-  const loadStations = React.useCallback(async () => {
-    const data = await apiFetch('/api/stations');
-    setStations(Array.isArray(data) ? data : []);
-  }, []);
-
-  const loadBackpool = React.useCallback(async () => {
-    setLoading(true);
-    setErrorText('');
-    try {
-      const params = new URLSearchParams();
-      params.set('from', from || shiftBerlinIsoDate(berlinTodayIsoDate(), -365));
-      params.set('to', to || berlinTodayIsoDate());
-      params.set('years', '5');
-      params.set('minPlays', minPlays || '1');
-      params.set('top', top || '500');
-      params.set('rotationMinDailyPlays', String(preset.minDaily));
-      params.set('lowRotationMaxDailyPlays', String(preset.maxDaily));
-      params.set('rotationMinActiveDays', String(preset.minActiveDays));
-      params.set('rotationMinSpanDays', String(preset.minSpanDays));
-      params.set('rotationMinReleaseAgeDays', String(preset.minReleaseAgeDays));
-      params.set('minTrackAgeDays', String(preset.minTrackAgeDays));
-      params.set('rotationAdaptive', '1');
-      params.set('minConfidence', String(preset.minConfidence));
-      params.set('hydrate', '0');
-      params.set('maxMetaLookups', '0');
-      if (stationId) params.set('stationId', stationId);
-
-      const data = await apiFetch(`/api/insights/backpool?${params.toString()}`);
-      setRawData(data || null);
-    } catch (error) {
-      setRawData(null);
-      setErrorText(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [from, to, minPlays, top, preset, stationId]);
-
-  React.useEffect(() => {
-    loadStations().catch((error) => {
-      setErrorText(error instanceof Error ? error.message : String(error));
-    });
-  }, [loadStations]);
-
-  React.useEffect(() => {
-    loadBackpool();
-  }, [loadBackpool]);
-
-  const applyRange = (days) => {
-    const end = berlinTodayIsoDate();
-    const start = shiftBerlinIsoDate(end, -(days - 1));
-    setFrom(start);
-    setTo(end);
-  };
-
+function TrackRow({ row, index, ui }) {
+  const age = ageDays(row.first_played_at_utc);
+  const lastAge = ageDays(row.last_played_at_utc);
   return html`
-    <${AppShell}
-      activeKey="backpool"
-      title="Backpool"
-      subtitle="Alte, niedrig rotierende Songs mit klaren Qualitätsregeln"
-      controls=${html`
-        <${Chakra.Button}
-          size="sm"
-          leftIcon=${React.createElement(Icons.RepeatIcon)}
-          onClick=${() => loadBackpool()}
-          isLoading=${loading}
-          colorScheme="blue"
-        >Neu laden<//>
-      `}
-    >
-      <${Chakra.VStack} align="stretch" spacing="5">
-        ${errorText ? html`
-          <${Chakra.Alert} status="error" borderRadius="14px">
-            <${Chakra.AlertIcon} />
-            <${Chakra.Text}>${errorText}<//>
-          <//>
-        ` : null}
-
-        <${PanelCard}
-          title="So liest du den Backpool"
-          subtitle="Gesamtliste zeigt nur validierte Backpool-Titel. Senderansicht zeigt Verteilung je Station."
-          right=${html`<${Chakra.Badge} colorScheme="purple" borderRadius="999px" px="3" py="1">${preset.label}<//>`}
-        >
-          <${Chakra.Text} fontSize="sm" color=${ui.textMuted}>${preset.hint}<//>
-        <//>
-
-        <${PanelCard} title="Filter">
-          <${Chakra.SimpleGrid} columns=${{ base: 1, md: 2, xl: 7 }} spacing="3">
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Sender<//>
-              <${Chakra.Select} value=${stationId} onChange=${(event) => setStationId(event.target.value)}>
-                <option value="">Alle Sender</option>
-                ${stations.map((station) => html`<option key=${station.id} value=${station.id}>${station.name || station.id}</option>`)}
-              <//>
-            <//>
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Von<//>
-              <${Chakra.Input} type="date" value=${from} onChange=${(event) => setFrom(event.target.value)} />
-            <//>
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Bis<//>
-              <${Chakra.Input} type="date" value=${to} onChange=${(event) => setTo(event.target.value)} />
-            <//>
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Profil<//>
-              <${Chakra.Select} value=${presetId} onChange=${(event) => setPresetId(event.target.value)}>
-                ${Object.entries(PRESETS).map(([key, item]) => html`<option key=${key} value=${key}>${item.label}</option>`)}
-              <//>
-            <//>
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Min. Einsätze<//>
-              <${Chakra.Input} type="number" min="1" max="500" value=${minPlays} onChange=${(event) => setMinPlays(event.target.value)} />
-            <//>
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Max. Titel<//>
-              <${Chakra.Input} type="number" min="1" max="500" value=${top} onChange=${(event) => setTop(event.target.value)} />
-            <//>
-            <${Chakra.FormControl}>
-              <${Chakra.FormLabel}>Suche<//>
-              <${Chakra.Input} value=${search} onChange=${(event) => setSearch(event.target.value)} placeholder="Interpret, Titel, Sender" />
-            <//>
-          <//>
-
-          <${Chakra.HStack} spacing="2" mt="3" flexWrap="wrap">
-            <${Chakra.Button} size="sm" variant="outline" onClick=${() => applyRange(90)}>90 Tage<//>
-            <${Chakra.Button} size="sm" variant="outline" onClick=${() => applyRange(180)}>180 Tage<//>
-            <${Chakra.Button} size="sm" variant="outline" onClick=${() => applyRange(365)}>365 Tage<//>
-            <${Chakra.Button} size="sm" colorScheme="blue" onClick=${() => loadBackpool()} isLoading=${loading}>Laden<//>
-          <//>
-
-          <${Chakra.SimpleGrid} columns=${{ base: 1, md: 2, xl: 4 }} spacing="3" mt="4">
-            <${Chakra.Checkbox} isChecked=${excludeNoise} onChange=${(event) => setExcludeNoise(event.target.checked)}>
-              Nicht-Musik ausblenden
-            <//>
-            <${Chakra.Checkbox} isChecked=${enforceConfidence} onChange=${(event) => setEnforceConfidence(event.target.checked)}>
-              Min. Treffsicherheit ${preset.minConfidence}
-            <//>
-            <${Chakra.Checkbox} isChecked=${enforceReleaseAge} onChange=${(event) => setEnforceReleaseAge(event.target.checked)}>
-              Min. Release-Alter ${formatNumber(preset.minReleaseAgeDays)} Tage
-            <//>
-            <${Chakra.Checkbox} isChecked=${enforceTrackAge} onChange=${(event) => setEnforceTrackAge(event.target.checked)}>
-              Min. Sender-Alter ${formatNumber(preset.minTrackAgeDays)} Tage
-            <//>
-          <//>
-        <//>
-
-        <${Chakra.SimpleGrid} columns=${{ base: 2, lg: 4 }} spacing="3">
-          <${StatCard} label="Backpool-Titel" value=${formatNumber(kpis.tracks)} />
-          <${StatCard} label="Backpool-Plays" value=${formatNumber(kpis.plays)} />
-          <${StatCard} label="Ø Plays/Tag" value=${toFixedComma(kpis.avgPlaysPerDay, 2)} />
-          <${StatCard} label="Aktive Sender" value=${formatNumber(kpis.senderCount)} />
-        <//>
-
-        <${PanelCard}
-          title="Neu im Backpool"
-          subtitle="Titel, die in den letzten 14 Tagen erstmals als Backpool im Monitoring auftauchen"
-          right=${html`<${Chakra.Badge} colorScheme="green" borderRadius="999px" px="3" py="1">${formatNumber(recentBackpool.length)} Titel<//>`}
-        >
-          <${Chakra.VStack} align="stretch" spacing="2">
-            ${recentBackpool.map((row) => html`
-              <${Chakra.HStack} key=${row._id} justify="space-between" border="1px solid" borderColor=${ui.lineColor} borderRadius="10px" px="3" py="2">
-                <${Chakra.Box} minW="0">
-                  <${Chakra.Text} fontSize="sm" fontWeight="700" color=${ui.textPrimary} noOfLines=${1}>${row.artist} - ${row.title}<//>
-                  <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>
-                    Erstes Backpool-Signal: ${row.firstPlayedDate || '-'} | Release: ${fmtDateOnly(row.releaseDate)} | Ø/Tag: ${toFixedComma(row.playsPerDay, 2)} | Sender: ${formatNumber(row.stationCount)}
-                  <//>
-                <//>
-                <${Chakra.HStack} spacing="2">
-                  <${PreviewControl} previewUrl=${row.previewUrl} externalUrl=${row.externalUrl} compact=${true} />
-                  ${row.trackKey ? html`<${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.trackKey)}`} color="blue.500" whiteSpace="nowrap">Öffnen<//>` : null}
-                <//>
-              <//>
-            `)}
-            ${recentBackpool.length === 0 ? html`
-              <${Chakra.Text} fontSize="sm" color=${ui.textMuted}>Keine neuen Backpool-Titel in den letzten 14 Tagen.<//>
-            ` : null}
-          <//>
-        <//>
-
-        <${PanelCard} title="Qualitätsfilter" subtitle="Ausgeblendete Titel nach Grund">
-          <${Chakra.HStack} spacing="3" flexWrap="wrap">
-            <${Chakra.Tag} colorScheme="red" borderRadius="999px">Nicht-Musik: ${formatNumber(processed.reasons.noisy)}<//>
-            <${Chakra.Tag} colorScheme="orange" borderRadius="999px">Trend/Revival: ${formatNumber(processed.reasons.trend)}<//>
-            <${Chakra.Tag} colorScheme="purple" borderRadius="999px">Low Confidence: ${formatNumber(processed.reasons.lowConfidence)}<//>
-            <${Chakra.Tag} colorScheme="blue" borderRadius="999px">Zu jung (Release): ${formatNumber(processed.reasons.tooYoungRelease)}<//>
-            <${Chakra.Tag} colorScheme="gray" borderRadius="999px">Zu jung (Sender): ${formatNumber(processed.reasons.tooYoungStation)}<//>
-            <${Chakra.Tag} colorScheme="teal" borderRadius="999px">Suchfilter: ${formatNumber(processed.reasons.search)}<//>
-          <//>
-        <//>
-
-        <${PanelCard}
-          title="Ansicht"
-          right=${html`
-            <${Chakra.ButtonGroup} size="sm" isAttached variant="outline">
-              <${Chakra.Button} colorScheme=${viewMode === 'global' ? 'blue' : 'gray'} onClick=${() => setViewMode('global')}>Gesamtliste<//>
-              <${Chakra.Button} colorScheme=${viewMode === 'station' ? 'blue' : 'gray'} onClick=${() => setViewMode('station')}>Senderansicht<//>
-            <//>
-          `}
-        >
-          ${viewMode === 'global'
-            ? html`<${GlobalList} rows=${processed.allTracks} lineColor=${ui.lineColor} textMuted=${ui.textMuted} textPrimary=${ui.textPrimary} />`
-            : html`<${StationView} rows=${processed.perStation} lineColor=${ui.lineColor} textMuted=${ui.textMuted} textPrimary=${ui.textPrimary} />`}
-        <//>
+    <${Chakra.Tr} _hover=${{ bg: ui.subtleBg }}>
+      <${Chakra.Td} color=${ui.textMuted} fontSize="xs" w="8" textAlign="right">${index + 1}<//>
+      <${Chakra.Td}>
+        <${Chakra.Text} fontWeight="600" fontSize="sm">${row.artist}<//>
+        <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
+      <//>
+      <${Chakra.Td} isNumeric fontWeight="700">${formatNumber(row.plays)}<//>
+      <${Chakra.Td} isNumeric color=${ui.textMuted}>${fmtPlaysPerDay(row.plays_per_day)}/T<//>
+      <${Chakra.Td} isNumeric color=${ui.textMuted}>${formatNumber(row.active_days)}<//>
+      <${Chakra.Td} isNumeric>
+        <${Chakra.Text} fontSize="sm">${ageDaysText(age)}<//>
+        <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${fmtDate(row.first_played_at_utc)}<//>
+      <//>
+      <${Chakra.Td} isNumeric>
+        <${Chakra.Text} fontSize="sm" color=${lastAge !== null && lastAge <= 14 ? 'green.400' : ui.textMuted}>${ageDaysText(lastAge)}<//>
       <//>
     <//>
   `;
 }
 
-function GlobalList({ rows, lineColor, textMuted, textPrimary }) {
+// ── StationPanel ──────────────────────────────────────────────────────────────
+
+function StationPanel({ station, stationName, search, ui }) {
+  const visible = React.useMemo(
+    () => station.tracks.filter((r) => matchSearch(r, search)),
+    [station.tracks, search]
+  );
+
   return html`
-    <${Chakra.TableContainer} maxH="660px" overflowY="auto" className="horizon-scroll" border="1px solid" borderColor=${lineColor} borderRadius="14px">
-      <${Chakra.Table} size="sm">
-        <${Chakra.Thead}>
+    <${Chakra.AccordionItem} border="none" mb="2">
+      <${Chakra.AccordionButton}
+        bg=${ui.cardBg}
+        borderRadius="12px"
+        px="4" py="3"
+        _hover=${{ bg: ui.subtleBg }}
+        _expanded=${{ borderBottomRadius: '0' }}
+      >
+        <${Chakra.HStack} flex="1" spacing="3">
+          <${Chakra.Text} fontWeight="700" fontSize="sm">${stationName}<//>
+          <${Chakra.Badge} colorScheme="purple" borderRadius="999px" px="2">
+            ${visible.length}${search ? ` / ${station.trackCount}` : ''} Titel
+          <//>
+        <//>
+        <${Chakra.AccordionIcon} />
+      <//>
+      <${Chakra.AccordionPanel}
+        pb="0" px="0"
+        bg=${ui.cardBg}
+        borderBottomRadius="12px"
+        overflow="hidden"
+      >
+        ${visible.length === 0
+          ? html`<${Chakra.Text} px="4" py="3" fontSize="sm" color=${ui.textMuted}>Keine Treffer.<//>`
+          : html`
+            <${Chakra.Box} overflowX="auto" maxH="420px" overflowY="auto" className="horizon-scroll">
+              <${Chakra.Table} size="sm" variant="simple">
+                <${Chakra.Thead} position="sticky" top="0" zIndex="1" bg=${ui.cardBg}>
+                  <${Chakra.Tr}>
+                    <${Chakra.Th} w="8">#<//>
+                    <${Chakra.Th}>Interpret / Titel<//>
+                    <${Chakra.Th} isNumeric>Plays<//>
+                    <${Chakra.Th} isNumeric>Ø/Tag<//>
+                    <${Chakra.Th} isNumeric>Tage aktiv<//>
+                    <${Chakra.Th} isNumeric>Im Sender seit<//>
+                    <${Chakra.Th} isNumeric>Zuletzt gespielt<//>
+                  <//>
+                <//>
+                <${Chakra.Tbody}>
+                  ${visible.map((row, i) => html`
+                    <${TrackRow} key=${row.track_key} row=${row} index=${i} ui=${ui} />
+                  `)}
+                <//>
+              <//>
+            <//>
+          `}
+      <//>
+    <//>
+  `;
+}
+
+// ── GlobalTable ────────────────────────────────────────────────────────────────
+
+function GlobalTable({ rows, stationNames, search, ui }) {
+  const nameById = React.useMemo(() => {
+    const m = new Map();
+    (stationNames || []).forEach((s) => m.set(s.id, s.name || s.id));
+    return m;
+  }, [stationNames]);
+
+  const visible = React.useMemo(
+    () => rows.filter((r) => matchSearch(r, search)),
+    [rows, search]
+  );
+
+  if (!visible.length) {
+    return html`<${Chakra.Text} fontSize="sm" color=${ui.textMuted}>Keine Einträge gefunden.<//>`;
+  }
+
+  return html`
+    <${Chakra.Box} overflowX="auto" maxH="580px" overflowY="auto" className="horizon-scroll">
+      <${Chakra.Table} size="sm" variant="simple">
+        <${Chakra.Thead} position="sticky" top="0" zIndex="1" bg=${ui.cardBg}>
           <${Chakra.Tr}>
-            <${Chakra.Th}>Titel<//>
-            <${Chakra.Th}>Plays<//>
-            <${Chakra.Th}>Ø/Tag<//>
+            <${Chakra.Th} w="8">#<//>
+            <${Chakra.Th}>Interpret / Titel<//>
             <${Chakra.Th}>Sender<//>
-            <${Chakra.Th}>Release-Alter<//>
-            <${Chakra.Th}>Ø Abstand<//>
-            <${Chakra.Th}>Analyse<//>
+            <${Chakra.Th} isNumeric>Plays<//>
+            <${Chakra.Th} isNumeric>Ø/Tag<//>
+            <${Chakra.Th} isNumeric>Tage aktiv<//>
+            <${Chakra.Th} isNumeric>Im Sender seit<//>
+            <${Chakra.Th} isNumeric>Zuletzt gespielt<//>
           <//>
         <//>
         <${Chakra.Tbody}>
-          ${rows.map((row) => html`
-            <${Chakra.Tr} key=${row._id}>
-              <${Chakra.Td}>
-                <${Chakra.Text} fontWeight="700" color=${textPrimary}>${row.artist}<//>
-                <${Chakra.Text} fontSize="xs" color=${textMuted}>${row.title}<//>
-                <${Chakra.Text} fontSize="xs" color=${textMuted}>Release: ${fmtDateOnly(row.releaseDate)}<//>
-                <${Chakra.Text} fontSize="xs" color=${textMuted}>ID: ${row.trackKey || '-'}<//>
+          ${visible.map((row, i) => {
+            const age = ageDays(row.first_played_at_utc);
+            const lastAge = ageDays(row.last_played_at_utc);
+            return html`
+              <${Chakra.Tr} key=${`${row.station_id}__${row.track_key}`} _hover=${{ bg: ui.subtleBg }}>
+                <${Chakra.Td} color=${ui.textMuted} fontSize="xs" textAlign="right">${i + 1}<//>
+                <${Chakra.Td}>
+                  <${Chakra.Text} fontWeight="600" fontSize="sm">${row.artist}<//>
+                  <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
+                <//>
+                <${Chakra.Td} fontSize="xs" color=${ui.textMuted}>${nameById.get(row.station_id) ?? row.station_id}<//>
+                <${Chakra.Td} isNumeric fontWeight="700">${formatNumber(row.plays)}<//>
+                <${Chakra.Td} isNumeric color=${ui.textMuted}>${fmtPlaysPerDay(row.plays_per_day)}/T<//>
+                <${Chakra.Td} isNumeric color=${ui.textMuted}>${formatNumber(row.active_days)}<//>
+                <${Chakra.Td} isNumeric>
+                  <${Chakra.Text} fontSize="sm">${ageDaysText(age)}<//>
+                  <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${fmtDate(row.first_played_at_utc)}<//>
+                <//>
+                <${Chakra.Td} isNumeric>
+                  <${Chakra.Text} fontSize="sm" color=${lastAge !== null && lastAge <= 14 ? 'green.400' : ui.textMuted}>${ageDaysText(lastAge)}<//>
+                <//>
               <//>
-              <${Chakra.Td}>${formatNumber(row.plays)}<//>
-              <${Chakra.Td}>${toFixedComma(row.playsPerDay, 2)}<//>
-              <${Chakra.Td}>
-                <${Chakra.Text}>${formatNumber(row.stationCount)}<//>
-                <${Chakra.Text} fontSize="xs" color=${textMuted}>${(row.stationNames || []).slice(0, 2).join(', ') || '-'}<//>
-              <//>
-              <${Chakra.Td}>${dayAgeText(row.releaseAgeDays)}<//>
-              <${Chakra.Td}>${Number.isFinite(row.cadenceDays) && row.cadenceDays > 0 ? `${toFixedComma(row.cadenceDays, 2)} Tage` : '-'}<//>
-              <${Chakra.Td}>
-                ${row.trackKey ? html`
-                  <${Chakra.VStack} align="start" spacing="1">
-                    <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.trackKey)}`} color="blue.500">Öffnen<//>
-                    <${PreviewControl} previewUrl=${row.previewUrl} externalUrl=${row.externalUrl} compact=${true} />
-                    <${Chakra.Button} size="xs" variant="outline" onClick=${() => copyToClipboard(row.trackKey)}>ID kopieren<//>
-                  <//>
-                ` : '-'}
-              <//>
-            <//>
-          `)}
-          ${rows.length === 0 ? html`
-            <${Chakra.Tr}><${Chakra.Td} colSpan="7" color=${textMuted}>Keine Backpool-Titel für diese Filter.<//><//>
-          ` : null}
+            `;
+          })}
         <//>
       <//>
     <//>
   `;
 }
 
-function StationView({ rows, lineColor, textMuted, textPrimary }) {
-  return html`
-    <${Chakra.VStack} align="stretch" spacing="3">
-      ${rows.map((station) => html`
-        <${Chakra.Box} key=${station.stationId} border="1px solid" borderColor=${lineColor} borderRadius="14px" p="3">
-          <${Chakra.HStack} justify="space-between" mb="2">
-            <${Chakra.Text} fontWeight="700" color=${textPrimary}>${station.stationName}<//>
-            <${Chakra.Text} fontSize="sm" color=${textMuted}>${formatNumber(station.tracks.length)} Titel | ${formatNumber(station.totalPlays)} Plays<//>
-          <//>
-          <${Chakra.TableContainer}>
-            <${Chakra.Table} size="sm" variant="simple">
-              <${Chakra.Thead}>
-                <${Chakra.Tr}>
-                  <${Chakra.Th}>Titel<//>
-                  <${Chakra.Th}>Plays<//>
-                  <${Chakra.Th}>Ø/Tag<//>
-                  <${Chakra.Th}>Release-Alter<//>
-                <//>
-              <//>
-              <${Chakra.Tbody}>
-                ${(station.tracks || []).slice(0, 10).map((row) => html`
-                  <${Chakra.Tr} key=${row._id}>
-                    <${Chakra.Td}>
-                      <${Chakra.Text} fontWeight="600" color=${textPrimary}>${row.artist} - ${row.title}<//>
-                      <${Chakra.Text} fontSize="xs" color=${textMuted}>Release: ${fmtDateOnly(row.releaseDate)}${(row.previewUrl || row.externalUrl) ? ' · Preview verfügbar' : ''}<//>
-                      <${Chakra.Text} fontSize="xs" color=${textMuted}>ID: ${row.trackKey || '-'}<//>
-                    <//>
-                    <${Chakra.Td}>${formatNumber(row.plays)}<//>
-                    <${Chakra.Td}>${toFixedComma(row.playsPerDay, 2)}<//>
-                    <${Chakra.Td}>${dayAgeText(row.releaseAgeDays)}<//>
-                  <//>
-                `)}
-              <//>
-            <//>
-          <//>
-        <//>
-      `)}
-      ${rows.length === 0 ? html`<${Chakra.Text} color=${textMuted}>Keine Senderdaten für die aktuelle Auswahl.<//>` : null}
-    <//>
-  `;
-}
+// ── KpiCard ────────────────────────────────────────────────────────────────────
 
-function StatCard({ label, value }) {
+function KpiCard({ label, value, sub }) {
   const ui = useUiColors();
   return html`
     <${PanelCard} p="4">
       <${Chakra.Text} fontSize="xs" color=${ui.textMuted} mb="1">${label}<//>
       <${Chakra.Text} fontSize="2xl" fontWeight="800" color=${ui.textPrimary}>${value}<//>
+      ${sub ? html`<${Chakra.Text} fontSize="xs" color=${ui.textMuted} mt="1">${sub}<//>` : null}
+    <//>
+  `;
+}
+
+// ── main app ───────────────────────────────────────────────────────────────────
+
+function BackpoolApp() {
+  const ui = useUiColors();
+
+  const [minAgeDays, setMinAgeDays] = React.useState('180');
+  const [recentDays, setRecentDays] = React.useState('60');
+  const [minPlays, setMinPlays] = React.useState('2');
+  const [stationFilter, setStationFilter] = React.useState('');
+  const [search, setSearch] = React.useState('');
+  const [viewMode, setViewMode] = React.useState('station');
+
+  const [stations, setStations] = React.useState([]);
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
+
+  const debouncedSearch = useDebouncedValue(search, 200);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const p = new URLSearchParams({
+        minAgeDays: minAgeDays || '180',
+        recentDays: recentDays || '60',
+        minPlays: minPlays || '2',
+        limit: '2000'
+      });
+      if (stationFilter) p.set('stationId', stationFilter);
+      const result = await apiFetch(`/api/backpool/simple?${p}`);
+      setData(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [minAgeDays, recentDays, minPlays, stationFilter]);
+
+  React.useEffect(() => {
+    apiFetch('/api/stations')
+      .then((rows) => setStations(Array.isArray(rows) ? rows : []))
+      .catch(() => {});
+  }, []);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const kpiTotalTracks = data?.totalTracks ?? 0;
+  const kpiStationCount = data?.stations?.length ?? 0;
+  const allRows = React.useMemo(
+    () => (data?.stations ?? []).flatMap((s) => s.tracks),
+    [data]
+  );
+  const kpiAvgAge = React.useMemo(() => {
+    if (!allRows.length) return null;
+    const ages = allRows.map((r) => ageDays(r.first_played_at_utc)).filter((v) => v !== null);
+    if (!ages.length) return null;
+    return Math.round(ages.reduce((a, b) => a + b, 0) / ages.length);
+  }, [allRows]);
+
+  const stationNameById = React.useMemo(() => {
+    const m = new Map();
+    stations.forEach((s) => m.set(s.id, s.name || s.id));
+    return m;
+  }, [stations]);
+
+  const allRowsSorted = React.useMemo(
+    () => [...allRows].sort((a, b) => Number(b.plays) - Number(a.plays)),
+    [allRows]
+  );
+
+  return html`
+    <${AppShell}
+      activeKey="backpool"
+      title="Backpool"
+      subtitle="Ältere Songs, die Sender noch aktiv spielen"
+      controls=${html`
+        <${Chakra.Button}
+          size="sm"
+          leftIcon=${React.createElement(Icons.RepeatIcon)}
+          colorScheme="blue"
+          isLoading=${loading}
+          onClick=${load}
+        >Neu laden<//>
+      `}
+    >
+      <${Chakra.VStack} align="stretch" spacing="5">
+        ${error ? html`
+          <${Chakra.Alert} status="error" borderRadius="14px">
+            <${Chakra.AlertIcon} />
+            ${error}
+          <//>
+        ` : null}
+
+        <${PanelCard} title="Filter">
+          <${Chakra.SimpleGrid} columns=${{ base: 1, md: 2, xl: 5 }} spacing="3">
+            <${Chakra.FormControl}>
+              <${Chakra.FormLabel} fontSize="sm">Sender<//>
+              <${Chakra.Select}
+                size="sm"
+                value=${stationFilter}
+                onChange=${(e) => setStationFilter(e.target.value)}
+              >
+                <option value="">Alle Sender</option>
+                ${stations.map((s) => html`
+                  <option key=${s.id} value=${s.id}>${s.name || s.id}</option>
+                `)}
+              <//>
+            <//>
+            <${Chakra.FormControl}>
+              <${Chakra.FormLabel} fontSize="sm">Mindestalter im Sender (Tage)<//>
+              <${Chakra.NumberInput}
+                size="sm"
+                min="7" max="3650"
+                value=${minAgeDays}
+                onChange=${(v) => setMinAgeDays(v)}
+              >
+                <${Chakra.NumberInputField} />
+                <${Chakra.NumberInputStepper}>
+                  <${Chakra.NumberIncrementStepper} />
+                  <${Chakra.NumberDecrementStepper} />
+                <//>
+              <//>
+            <//>
+            <${Chakra.FormControl}>
+              <${Chakra.FormLabel} fontSize="sm">Aktiv in letzten N Tagen<//>
+              <${Chakra.NumberInput}
+                size="sm"
+                min="1" max="365"
+                value=${recentDays}
+                onChange=${(v) => setRecentDays(v)}
+              >
+                <${Chakra.NumberInputField} />
+                <${Chakra.NumberInputStepper}>
+                  <${Chakra.NumberIncrementStepper} />
+                  <${Chakra.NumberDecrementStepper} />
+                <//>
+              <//>
+            <//>
+            <${Chakra.FormControl}>
+              <${Chakra.FormLabel} fontSize="sm">Min. Plays<//>
+              <${Chakra.NumberInput}
+                size="sm"
+                min="1" max="500"
+                value=${minPlays}
+                onChange=${(v) => setMinPlays(v)}
+              >
+                <${Chakra.NumberInputField} />
+                <${Chakra.NumberInputStepper}>
+                  <${Chakra.NumberIncrementStepper} />
+                  <${Chakra.NumberDecrementStepper} />
+                <//>
+              <//>
+            <//>
+            <${Chakra.FormControl}>
+              <${Chakra.FormLabel} fontSize="sm">Suche<//>
+              <${Chakra.Input}
+                size="sm"
+                placeholder="Interpret oder Titel…"
+                value=${search}
+                onChange=${(e) => setSearch(e.target.value)}
+              />
+            <//>
+          <//>
+          <${Chakra.HStack} mt="3" spacing="2" flexWrap="wrap">
+            <${Chakra.Button} size="xs" variant="outline" onClick=${() => { setMinAgeDays('90'); setRecentDays('30'); }}>3 Monate<//>
+            <${Chakra.Button} size="xs" variant="outline" onClick=${() => { setMinAgeDays('180'); setRecentDays('60'); }}>6 Monate<//>
+            <${Chakra.Button} size="xs" variant="outline" onClick=${() => { setMinAgeDays('365'); setRecentDays('90'); }}>1 Jahr+<//>
+            <${Chakra.Button} size="xs" colorScheme="blue" onClick=${load} isLoading=${loading}>Laden<//>
+          <//>
+        <//>
+
+        <${Chakra.SimpleGrid} columns=${{ base: 2, md: 4 }} spacing="3">
+          <${KpiCard} label="Backpool-Titel" value=${loading ? '…' : formatNumber(kpiTotalTracks)} sub="über alle Sender" />
+          <${KpiCard} label="Aktive Sender" value=${loading ? '…' : formatNumber(kpiStationCount)} />
+          <${KpiCard} label="Ø Alter im Sender" value=${loading ? '…' : kpiAvgAge !== null ? ageDaysText(kpiAvgAge) : '-'} sub="seit Erstausstrahlung" />
+          <${KpiCard}
+            label="Definition"
+            value="Backpool"
+            sub=${`≥${minAgeDays}T alt, gespielt in letzten ${recentDays}T`}
+          />
+        <//>
+
+        <${Chakra.Tabs}
+          variant="soft-rounded"
+          colorScheme="blue"
+          index=${viewMode === 'station' ? 0 : 1}
+          onChange=${(i) => setViewMode(i === 0 ? 'station' : 'global')}
+        >
+          <${Chakra.TabList} mb="4">
+            <${Chakra.Tab}>Je Sender<//>
+            <${Chakra.Tab}>Gesamtliste<//>
+          <//>
+          <${Chakra.TabPanels}>
+
+            <${Chakra.TabPanel} px="0" pb="0">
+              ${loading
+                ? html`<${Chakra.Spinner} size="sm" />`
+                : (data?.stations ?? []).length === 0
+                  ? html`<${Chakra.Text} color=${ui.textMuted} fontSize="sm">Keine Daten. Bitte Filter anpassen.<//>`
+                  : html`
+                    <${Chakra.Accordion} allowMultiple defaultIndex=${[0]}>
+                      ${(data?.stations ?? []).map((station) => html`
+                        <${StationPanel}
+                          key=${station.stationId}
+                          station=${station}
+                          stationName=${stationNameById.get(station.stationId) ?? station.stationId}
+                          search=${debouncedSearch}
+                          ui=${ui}
+                        />
+                      `)}
+                    <//>
+                  `}
+            <//>
+
+            <${Chakra.TabPanel} px="0" pb="0">
+              <${PanelCard} title="Alle Backpool-Titel" subtitle="Über alle Sender, nach Plays sortiert">
+                ${loading
+                  ? html`<${Chakra.Spinner} size="sm" />`
+                  : html`
+                    <${GlobalTable}
+                      rows=${allRowsSorted}
+                      stationNames=${stations}
+                      search=${debouncedSearch}
+                      ui=${ui}
+                    />
+                  `}
+              <//>
+            <//>
+
+          <//>
+        <//>
+      <//>
     <//>
   `;
 }

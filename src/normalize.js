@@ -32,7 +32,7 @@ const STATION_SLOGAN_PATTERN =
 const DATE_AMPERSAND_PREFIX_PATTERN =
   /^(?:\d{1,2}[.\-/]\d{1,2}(?:[.\-/]\d{2,4})?|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+\d{4})\s*&\s+/i;
 const EVENT_SCHEDULE_PATTERN =
-  /\b(radio\s*1(?:['’]s|\s+s)?\s+big\s+weekend|big\s+weekend|lineup|setlist|festival|live\s+from|live\s+at|bbc\s+radio)\b/i;
+  /\b(radio\s*1(?:['']s|\s+s)?\s+big\s+weekend|big\s+weekend|lineup|setlist|festival|live\s+from|live\s+at|bbc\s+radio)\b/i;
 const GENERIC_STATION_TOKENS = new Set([
   'radio',
   'sender',
@@ -62,7 +62,7 @@ const EVENT_DATE_PATTERN =
 const DATE_EVENT_PREFIX_CLEAN_PATTERN =
   /^\s*(?:\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s+\d{4})\s*&\s+/i;
 const RADIO_EVENT_SUFFIX_CLEAN_PATTERN =
-  /\s*(?:[-–—,:]\s*)?(?:radio\s*\d+(?:['’]s|\s+s)?\s+big\s+weekend(?:\s*\d{4})?)\s*$/i;
+  /\s*(?:[-–—,:]\s*)?(?:radio\s*\d+(?:['']s|\s+s)?\s+big\s+weekend(?:\s*\d{4})?)\s*$/i;
 
 function clean(input) {
   return (input ?? '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -77,7 +77,8 @@ function normalizeUnicode(input) {
 export function canonicalTitleKey(input) {
   return normalizeUnicode(String(input ?? ''))
     .toLowerCase()
-    .replace(/['`´’]/g, '')
+    .replace(/\s*&\s*/g, ' and ')
+    .replace(/['`´']/g, '')
     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -156,7 +157,7 @@ function stripEditionParentheses(input) {
   if (contentRaw.length > 25) return source;
   if (/\d/.test(contentRaw)) return source;
   if (GENERIC_EDITION_DISALLOWED_PATTERN.test(contentNormalized)) return source;
-  if (!/^[\p{L}\s'’]+$/u.test(contentRaw)) return source;
+  if (!/^[\p{L}\s'']+$/u.test(contentRaw)) return source;
 
   const words = contentNormalized.split(' ').filter(Boolean);
   if (!words.some((word) => word.length >= 4)) return source;
@@ -204,7 +205,7 @@ function stripTrailingTitlePunctuation(input) {
 function canonicalizeArtistPart(input) {
   let part = normalizeUnicode(input)
     .toLowerCase()
-    .replace(/["'`´’“”„]/g, ' ')
+    .replace(/["'`´'“”„]/g, ' ')
     .replace(/[^\p{L}\p{N}\s-]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -371,7 +372,7 @@ function looksLikeEventScheduleLine(artistRaw, titleRaw) {
   if (!combined) return false;
 
   if (EVENT_SCHEDULE_PATTERN.test(combined) && DATE_AMPERSAND_PREFIX_PATTERN.test(title)) return true;
-  if (/\bradio\s*1(?:['’]s|\s+s)?\s+big\s+weekend\b/i.test(combined) && DATE_AMPERSAND_PREFIX_PATTERN.test(title)) return true;
+  if (/\bradio\s*1(?:['']s|\s+s)?\s+big\s+weekend\b/i.test(combined) && DATE_AMPERSAND_PREFIX_PATTERN.test(title)) return true;
   return false;
 }
 
@@ -450,7 +451,7 @@ export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', st
   );
 
   const artist = canonicalizeArtist(artistBase);
-  const title = titleBase.replace(/\s+/g, ' ').trim();
+  const title = titleBase.replace(/\s*&\s*/g, ' and ').replace(/\s+/g, ' ').trim();
 
   const trackKey = crypto
     .createHash('sha1')

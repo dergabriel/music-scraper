@@ -1408,8 +1408,8 @@ function releaseAgeYears(releaseDate, endDate) {
 export async function runIngest({ configPath, dbPath, logger }) {
   const config = loadConfig(configPath);
   const db = openDb(dbPath);
-  const trackHourStart = 6;
-  const trackHourEnd = 20;
+  const trackHourStart = Number(process.env.YRPA_TRACK_HOUR_START ?? 0);
+  const trackHourEnd = Number(process.env.YRPA_TRACK_HOUR_END ?? 23);
 
   let totalInserted = 0;
   const scrapeErrors = [];

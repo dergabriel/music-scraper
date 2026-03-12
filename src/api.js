@@ -1161,6 +1161,76 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       }
     },
 
+    backpoolSimple: (req, res) => {
+      try {
+        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : null;
+        const minAgeDays = parseIntQuery(req.query.minAgeDays, { fallback: 180, min: 7, max: 3650, fieldName: 'minAgeDays' });
+        const recentDays = parseIntQuery(req.query.recentDays, { fallback: 60, min: 1, max: 3650, fieldName: 'recentDays' });
+        const minPlays = parseIntQuery(req.query.minPlays, { fallback: 2, min: 1, max: 500, fieldName: 'minPlays' });
+        const limit = parseIntQuery(req.query.limit, { fallback: 1000, min: 1, max: 5000, fieldName: 'limit' });
+
+        // Calculate cutoff dates in JavaScript to avoid SQLite string concat with parameters
+        const now = new Date();
+        const firstPlayedCutoff = new Date(now.getTime() - minAgeDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + 'T23:59:59Z';
+        const recentCutoff = new Date(now.getTime() - recentDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + 'T00:00:00Z';
+
+        const db = sharedDb;
+        const baseWhere = stationId ? 'WHERE station_id = ?' : '';
+        const params = stationId
+          ? [stationId, firstPlayedCutoff, recentCutoff, minPlays, limit]
+          : [firstPlayedCutoff, recentCutoff, minPlays, limit];
+
+        const rows = db.prepare(`
+          SELECT
+            station_id,
+            track_key,
+            min(artist) as artist,
+            min(title) as title,
+            count(*) as plays,
+            count(distinct substr(played_at_utc, 1, 10)) as active_days,
+            round(count(*) * 1.0 / max(1,
+              cast(julianday(max(played_at_utc)) - julianday(min(played_at_utc)) + 1 as integer)
+            ), 4) as plays_per_day,
+            min(played_at_utc) as first_played_at_utc,
+            max(played_at_utc) as last_played_at_utc,
+            cast(julianday('now') - julianday(min(played_at_utc)) as integer) as station_age_days
+          FROM plays
+          ${baseWhere}
+          GROUP BY station_id, track_key
+          HAVING
+            min(played_at_utc) <= ?
+            AND max(played_at_utc) >= ?
+            AND count(*) >= ?
+          ORDER BY station_id ASC, plays DESC
+          LIMIT ?
+        `).all(...params);
+
+        // Group by station
+        const byStation = new Map();
+        for (const row of rows) {
+          if (!byStation.has(row.station_id)) {
+            byStation.set(row.station_id, []);
+          }
+          byStation.get(row.station_id).push(row);
+        }
+        const stations = Array.from(byStation.entries()).map(([sid, tracks]) => ({
+          stationId: sid,
+          trackCount: tracks.length,
+          tracks
+        }));
+
+        return res.json({
+          minAgeDays,
+          recentDays,
+          minPlays,
+          totalTracks: rows.length,
+          stations
+        });
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
     evaluateDaily: async (req, res) => {
       try {
         const date = req.body?.date ?? DateTime.now().setZone(BERLIN_TZ).toISODate();
@@ -1371,6 +1441,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/insights/backpool', handlers.backpool);
   app.get('/api/insights/backpool/catalog', handlers.backpoolCatalog);
   app.get('/api/insights/backpool/summary', handlers.backpoolSummary);
+  app.get('/api/backpool/simple', handlers.backpoolSimple);
   app.post('/api/jobs/evaluate-daily', handlers.evaluateDaily);
 
   return app;

@@ -101,12 +101,8 @@ function TopTracksTable({ tracks }) {
           ${tracks.map((row, index) => html`
             <${Chakra.Tr} key=${row.track_key}>
               <${Chakra.Td} color=${ui.textMuted} fontSize="xs">${index + 1}<//>
-              <${Chakra.Td} fontWeight="600" maxW="160px">
-                <${Chakra.Text} noOfLines=${1}>${row.artist}<//>
-              <//>
-              <${Chakra.Td} maxW="200px">
-                <${Chakra.Text} noOfLines=${1} color=${ui.textMuted}>${row.title}<//>
-              <//>
+              <${Chakra.Td} fontWeight="600">${row.artist}<//>
+              <${Chakra.Td} color=${ui.textMuted}>${row.title}<//>
               <${Chakra.Td} isNumeric fontWeight="700">${formatNumber(row.plays)}<//>
               <${Chakra.Td} isNumeric>
                 ${row.delta != null ? deltaBadge(row.delta, ui) : '-'}
@@ -210,15 +206,15 @@ function StationReportPanel({ stationId, weekStart, stations }) {
         <${PanelCard} title="Top-Titel diese Woche" subtitle="Nach Plays sortiert">
           <${Chakra.VStack} align="stretch" spacing="1" maxH="400px" overflowY="auto" className="horizon-scroll">
             ${(r.topTracks || []).map((row, index) => html`
-              <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor}>
-                <${Chakra.HStack} spacing="2" minW="0">
-                  <${Chakra.Text} fontSize="xs" color=${ui.textMuted} flexShrink="0" w="5" textAlign="right">${index + 1}<//>
-                  <${Chakra.Box} minW="0">
-                    <${Chakra.Text} fontSize="sm" fontWeight="600" noOfLines=${1}>${row.artist}<//>
-                    <${Chakra.Text} fontSize="xs" color=${ui.textMuted} noOfLines=${1}>${row.title}<//>
+              <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start">
+                <${Chakra.HStack} spacing="2" flex="1" minW="0" align="flex-start">
+                  <${Chakra.Text} fontSize="xs" color=${ui.textMuted} flexShrink="0" w="5" textAlign="right" pt="0.5">${index + 1}<//>
+                  <${Chakra.Box} flex="1" minW="0">
+                    <${Chakra.Text} fontSize="sm" fontWeight="600">${row.artist}<//>
+                    <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
                   <//>
                 <//>
-                <${Chakra.Text} fontSize="sm" fontWeight="700" flexShrink="0">${formatNumber(row.count)}<//>
+                <${Chakra.Text} fontSize="sm" fontWeight="700" flexShrink="0" ml="2">${formatNumber(row.count)}<//>
               <//>
             `)}
           <//>
@@ -231,12 +227,12 @@ function StationReportPanel({ stationId, weekStart, stations }) {
               : html`
                 <${Chakra.VStack} align="stretch" spacing="1" maxH="170px" overflowY="auto" className="horizon-scroll">
                   ${(r.newTracks || []).map((row) => html`
-                    <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor}>
-                      <${Chakra.Box} minW="0">
-                        <${Chakra.Text} fontSize="sm" fontWeight="600" noOfLines=${1}>${row.artist}<//>
-                        <${Chakra.Text} fontSize="xs" color=${ui.textMuted} noOfLines=${1}>${row.title}<//>
+                    <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start">
+                      <${Chakra.Box} flex="1" minW="0">
+                        <${Chakra.Text} fontSize="sm" fontWeight="600">${row.artist}<//>
+                        <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
                       <//>
-                      <${Chakra.Badge} colorScheme="green" borderRadius="999px">${formatNumber(row.count)}<//>
+                      <${Chakra.Badge} colorScheme="green" borderRadius="999px" flexShrink="0" ml="2">${formatNumber(row.count)}<//>
                     <//>
                   `)}
                 <//>
@@ -249,12 +245,12 @@ function StationReportPanel({ stationId, weekStart, stations }) {
               : html`
                 <${Chakra.VStack} align="stretch" spacing="1" maxH="170px" overflowY="auto" className="horizon-scroll">
                   ${(r.movers?.topGainers || []).map((row) => html`
-                    <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor}>
-                      <${Chakra.Box} minW="0">
-                        <${Chakra.Text} fontSize="sm" fontWeight="600" noOfLines=${1}>${row.artist}<//>
-                        <${Chakra.Text} fontSize="xs" color=${ui.textMuted} noOfLines=${1}>${row.title}<//>
+                    <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start">
+                      <${Chakra.Box} flex="1" minW="0">
+                        <${Chakra.Text} fontSize="sm" fontWeight="600">${row.artist}<//>
+                        <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
                       <//>
-                      <${Chakra.Badge} colorScheme="green" borderRadius="999px">+${formatNumber(row.delta)}<//>
+                      <${Chakra.Badge} colorScheme="green" borderRadius="999px" flexShrink="0" ml="2">+${formatNumber(row.delta)}<//>
                     <//>
                   `)}
                 <//>
