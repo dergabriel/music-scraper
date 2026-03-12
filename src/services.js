@@ -32,7 +32,14 @@ import {
   upsertDailyTrackStat,
   upsertDailyOverallTrackStat
 } from './db.js';
-import { BERLIN_TZ, buildWeekRanges, buildDayRangeBerlin, berlinTodayIso, isoUtcNow } from './time.js';
+import {
+  BERLIN_TZ,
+  buildWeekRanges,
+  buildDayRangeBerlin,
+  berlinTodayIso,
+  isoUtcNow,
+  isWithinLocalHourWindow
+} from './time.js';
 import { buildStationAnalytics, buildCrossStationAnalytics } from './analytics.js';
 import { writeMarkdownReport, writeCsvExports, writeStationMarkdownReport, gzipFile } from './report.js';
 import { HttpFetcher } from './fetchers/httpFetcher.js';
@@ -1664,6 +1671,8 @@ function releaseAgeYears(releaseDate, endDate) {
 export async function runIngest({ configPath, dbPath, logger }) {
   const config = loadConfig(configPath);
   const db = openDb(dbPath);
+  const trackHourStart = 6;
+  const trackHourEnd = 20;
 
   let totalInserted = 0;
   const scrapeErrors = [];
@@ -1814,6 +1823,12 @@ export async function runIngest({ configPath, dbPath, logger }) {
         }
         plays = filtered;
       }
+      let skippedOutsideHours = 0;
+      plays = plays.filter((play) => {
+        const keep = isWithinLocalHourWindow(play.playedAt, station.timezone, trackHourStart, trackHourEnd);
+        if (!keep) skippedOutsideHours += 1;
+        return keep;
+      });
 
       let inserted = 0;
       let skippedNoise = 0;
@@ -1975,6 +1990,9 @@ export async function runIngest({ configPath, dbPath, logger }) {
           dedupedByMinute,
           dedupedByMinGap,
           minPlayGapSeconds,
+          skippedOutsideHours,
+          trackHourStart,
+          trackHourEnd,
           verificationEnabled,
           verifyAllTracks
         },

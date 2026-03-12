@@ -163,6 +163,51 @@ describe('CLI integration', () => {
     30000
   );
 
+  it('ingest keeps only plays between 06:00 and 20:59 local station time', () => {
+    const projectRoot = path.resolve('.');
+    const tmp = mkTmpDir();
+    const dbPath = path.join(tmp, 'integration.sqlite');
+    const configPath = path.join(tmp, 'config.yaml');
+
+    const html = `
+      <html><body>
+        <table>
+          <tr><td>2026-02-17 05:59</td><td>Artist A</td><td>Song Before</td></tr>
+          <tr><td>2026-02-17 06:00</td><td>Artist B</td><td>Song Start</td></tr>
+          <tr><td>2026-02-17 20:59</td><td>Artist C</td><td>Song End</td></tr>
+          <tr><td>2026-02-17 21:00</td><td>Artist D</td><td>Song After</td></tr>
+        </table>
+      </body></html>
+    `;
+
+    fs.writeFileSync(
+      configPath,
+      [
+        'stations:',
+        '  - id: "hour_window_station"',
+        '    name: "Hour Window Station"',
+        `    playlist_url: "${toDataHtmlUrl(html)}"`,
+        '    parser: "generic_html"',
+        '    fetcher: "http"',
+        '    timezone: "Europe/Berlin"',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+
+    const ingest = runCli(projectRoot, tmp, ['ingest', '--config', configPath, '--db', dbPath]);
+    expect(ingest.status).toBe(0);
+
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db
+      .prepare('select artist_raw, title_raw, played_at_utc from plays order by played_at_utc asc')
+      .all();
+    db.close();
+
+    expect(rows.length).toBe(2);
+    expect(rows.map((row) => row.title_raw)).toEqual(['Song Start', 'Song End']);
+  });
+
   it('runs backpool analysis and writes station gold-title report', () => {
     const projectRoot = path.resolve('.');
     const tmp = mkTmpDir();

@@ -84,3 +84,15 @@ export function buildDayRangeBerlin(dateBerlinIso) {
     endUtcIso: endBerlin.toUTC().toISO()
   };
 }
+
+export function isWithinLocalHourWindow(date, timezone = BERLIN_TZ, startHour = 0, endHour = 23) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return false;
+  const safeStart = Math.max(0, Math.min(23, Number(startHour)));
+  const safeEnd = Math.max(0, Math.min(23, Number(endHour)));
+  const hour = DateTime.fromJSDate(date, { zone: 'utc' }).setZone(timezone || BERLIN_TZ).hour;
+
+  if (safeStart <= safeEnd) {
+    return hour >= safeStart && hour <= safeEnd;
+  }
+  return hour >= safeStart || hour <= safeEnd;
+}
