@@ -78,7 +78,7 @@ export function canonicalTitleKey(input) {
   return normalizeUnicode(String(input ?? ''))
     .toLowerCase()
     .replace(/\s*&\s*/g, ' and ')
-    .replace(/['`´']/g, '')
+    .replace(/['\u2018\u2019`\u00B4]/g, '')
     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();

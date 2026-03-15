@@ -45,7 +45,7 @@ format_log_line() {
   level="$(extract_json_number "$line" "level")"
   msg="$(extract_json_field "$line" "msg")"
   station="$(extract_json_field "$line" "station")"
-  err="$(extract_json_field "$line" "err")"
+  err="$(extract_json_field "$line" "error")"
   plays="$(extract_json_number "$line" "playsInserted")"
   inserted="$(extract_json_number "$line" "totalInserted")"
   warnings="$(extract_json_number "$line" "warnings")"

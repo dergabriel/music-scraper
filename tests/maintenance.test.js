@@ -416,23 +416,6 @@ describe('database maintenance', () => {
       '2026-03-01', canonical.trackKey, canonical.artist, canonical.title, 1,
       '2026-03-01', legacyKey, legacyArtist, legacyTitle, 1
     );
-    db.prepare(`
-      insert into backpool_track_catalog(
-        station_id, track_key, station_name, artist, title, classification,
-        analysis_from_berlin, analysis_to_berlin, analyzed_at_utc, range_days,
-        plays, plays_per_day, active_days, span_days, cadence_days,
-        first_played_at_utc, last_played_at_utc, release_date_utc,
-        verified_exists, verification_confidence, metadata_issue,
-        is_rotation_backpool, is_release_backpool, is_low_rotation_release_backpool
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'planet_radio', legacyKey, 'Planet Radio', legacyArtist, legacyTitle, 'sparse_rotation',
-      '2026-02-24', '2026-03-01', '2026-03-01T12:00:00.000Z', 7,
-      1, 0.14, 1, 1, null,
-      '2026-03-01T10:00:00.000Z', '2026-03-01T10:00:00.000Z', null,
-      null, null, null,
-      0, 0, 0
-    );
     upsertTrackMetadata(db, {
       track_key: canonical.trackKey,
       artist: canonical.artist,
@@ -525,8 +508,6 @@ describe('database maintenance', () => {
 
     const loserMeta = check.prepare('select track_key from track_metadata where track_key = ?').get(legacyKey);
     expect(loserMeta).toBeUndefined();
-    const loserBackpool = check.prepare('select track_key from backpool_track_catalog where track_key = ?').get(legacyKey);
-    expect(loserBackpool).toBeUndefined();
     check.close();
     fs.rmSync(tmp, { recursive: true, force: true });
   });

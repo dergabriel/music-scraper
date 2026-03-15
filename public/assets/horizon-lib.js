@@ -1,7 +1,7 @@
 import React from 'https://esm.sh/react@18.3.1';
 import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
-import * as Chakra from 'https://esm.sh/@chakra-ui/react@2.10.9?deps=react@18.3.1,react-dom@18.3.1&bundle';
-import * as Icons from 'https://esm.sh/@chakra-ui/icons@2.1.1?deps=react@18.3.1,react-dom@18.3.1&bundle';
+import * as Chakra from 'https://esm.sh/@chakra-ui/react@2.10.9?deps=react@18.3.1,react-dom@18.3.1';
+import * as Icons from 'https://esm.sh/@chakra-ui/icons@2.1.1?deps=react@18.3.1,react-dom@18.3.1';
 import htm from 'https://esm.sh/htm@3.1.1';
 
 export const html = htm.bind(React.createElement);

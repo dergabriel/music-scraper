@@ -9,7 +9,6 @@ import {
   runDailyEvaluation,
   runStationReport,
   runCoverageAudit,
-  runBackpoolAnalysis,
   runCanonicalArtistMaintenance,
   runItunesCanonicalMaintenance,
   runMergeDuplicateTracksMaintenance,
@@ -117,53 +116,6 @@ program
   });
 
 program
-  .command('analyze-backpool')
-  .requiredOption('--config <path>', 'Path to config.yaml')
-  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
-  .option('--from <YYYY-MM-DD>', 'Start date in Europe/Berlin (default: 365 days ago)')
-  .option('--to <YYYY-MM-DD>', 'End date in Europe/Berlin (default: today)')
-  .option('--years <number>', 'Backpool threshold age in years', '5')
-  .option('--min-plays <number>', 'Minimum plays per track in range', '1')
-  .option('--rotation-min-daily-plays <number>', 'Minimum avg plays/day for rotation backpool', '0.35')
-  .option('--min-confidence <number>', 'Minimum metadata confidence (0-1) for valid release dates', '0.72')
-  .option('--low-rotation-max-daily-plays <number>', 'Max avg plays/day for low-rotation backpool list', '2')
-  .option('--rotation-min-active-days <number>', 'Minimum active days in range for rotation backpool', '5')
-  .option('--rotation-min-span-days <number>', 'Minimum first-to-last span days for rotation backpool', '28')
-  .option('--rotation-min-release-age-days <number>', 'Minimum release age in days for rotation backpool', '1095')
-  .option('--min-track-age-days <number>', 'Minimum age of a track in station history to count as backpool', '30')
-  .option('--rotation-adaptive <0|1>', 'Adapt rotation thresholds to available station history (default: 1)', '1')
-  .option('--hydrate-missing-release', 'Enrich missing release metadata during analysis')
-  .option('--max-meta-lookups <number>', 'Max metadata lookups during enrichment', '120')
-  .option('--top <number>', 'Top backpool tracks per station in report', '20')
-  .action(async (opts) => {
-    try {
-      await runBackpoolAnalysis({
-        configPath: opts.config,
-        dbPath: opts.db,
-        from: opts.from,
-        to: opts.to,
-        years: Number(opts.years),
-        minTrackPlays: Number(opts.minPlays),
-        rotationMinDailyPlays: Number(opts.rotationMinDailyPlays),
-        minReleaseConfidence: Number(opts.minConfidence),
-        lowRotationMaxDailyPlays: Number(opts.lowRotationMaxDailyPlays),
-        rotationMinActiveDays: Number(opts.rotationMinActiveDays),
-        rotationMinSpanDays: Number(opts.rotationMinSpanDays),
-        rotationMinReleaseAgeDays: Number(opts.rotationMinReleaseAgeDays),
-        minTrackAgeDays: Number(opts.minTrackAgeDays),
-        rotationAdaptive: String(opts.rotationAdaptive ?? '1') !== '0',
-        autoEnrichMissingRelease: Boolean(opts.hydrateMissingRelease),
-        maxMetadataLookups: Number(opts.maxMetaLookups),
-        top: Number(opts.top),
-        logger
-      });
-    } catch (err) {
-      logger.error({ err: err.message }, 'backpool analysis failed');
-      process.exitCode = 1;
-    }
-  });
-
-program
   .command('maintain-db')
   .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
   .option('--dry-run', 'Only report candidate merges, do not write changes')
@@ -258,15 +210,6 @@ program
           logger
         });
 
-        await runBackpoolAnalysis({
-          configPath: opts.config,
-          dbPath: opts.db,
-          writeReport: false,
-          autoEnrichMissingRelease: false,
-          persistToDb: true,
-          logger
-        });
-
         if (opts.auditCoverage) {
           runCoverageAudit({
             configPath: opts.config,
@@ -334,14 +277,6 @@ program
           configPath: opts.config,
           dbPath: opts.db,
           date: berlinYesterday,
-          logger
-        });
-        await runBackpoolAnalysis({
-          configPath: opts.config,
-          dbPath: opts.db,
-          writeReport: false,
-          autoEnrichMissingRelease: false,
-          persistToDb: true,
           logger
         });
         const weekStart = DateTime.now().setZone(BERLIN_TZ).startOf('week').toISODate();

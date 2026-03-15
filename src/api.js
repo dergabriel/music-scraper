@@ -16,12 +16,10 @@ import {
   getTrackStationCounts,
   listNewTitles,
   getNewTracksInWeek,
-  listBackpoolTrackCatalog,
-  listBackpoolStationSummary
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackSeriesByStation, buildTrackTotals } from './trends.js';
-import { runDailyEvaluation, runBackpoolAnalysis, runManualTrackMerge } from './services.js';
+import { runDailyEvaluation, runManualTrackMerge } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
 import { TrackVerifier } from './trackVerifier.js';
@@ -188,14 +186,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     }
   };
 
-  const backpoolInFlight = new Map();
-  const backpoolCache = new Map();
-  const BACKPOOL_CACHE_TTL_MS = 20 * 1000;
-
-  function toBackpoolKey(payload) {
-    return JSON.stringify(payload);
-  }
-
   return {
     __close: closeSharedDb,
     health: (_req, res) => {
@@ -205,7 +195,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     docs: (_req, res) => {
       res.json({
         name: 'Music Scraper API',
-        pages: ['GET /dashboard', 'GET /backpool', 'GET /tracks', 'GET /new-titles'],
+        pages: ['GET /dashboard', 'GET /tracks', 'GET /new-titles'],
         endpoints: [
           'GET /api/health',
           'GET /api/docs',
@@ -231,9 +221,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/reports/weekly-overview?weekStart=YYYY-MM-DD&limit=50',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&releaseYear=YYYY&maxReleaseAgeDays=730',
-          'GET /api/insights/backpool?from=YYYY-MM-DD&to=YYYY-MM-DD&years=5&minPlays=1&top=20&rotationMinDailyPlays=0.35&lowRotationMaxDailyPlays=2&rotationMinActiveDays=5&rotationMinSpanDays=28&rotationMinReleaseAgeDays=1095&minTrackAgeDays=30&rotationAdaptive=1&minConfidence=0.72&stationId=ID&hydrate=0',
-          'GET /api/insights/backpool/catalog?stationId=ID&classification=rotation_backpool|hot_rotation|sparse_rotation&limit=500',
-          'GET /api/insights/backpool/summary?stationId=ID',
           'POST /api/jobs/evaluate-daily {"date":"YYYY-MM-DD"}'
         ]
       });
@@ -848,25 +835,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           const totalTracks = trackRows.length;
           const percentNewTracks = totalTracks > 0 ? (newTracksCount / totalTracks) * 100 : 0;
 
-          const backpoolTrackKeys = db.prepare(`
-            select distinct track_key
-            from backpool_track_catalog
-            where station_id = ?
-          `).all(stationId).map((row) => row.track_key);
-          let backpoolPlays = 0;
-          if (backpoolTrackKeys.length) {
-            const placeholders = backpoolTrackKeys.map(() => '?').join(', ');
-            backpoolPlays = db.prepare(`
-              select count(*) as c
-              from plays
-              where station_id = ?
-                and played_at_utc >= ?
-                and played_at_utc < ?
-                and track_key in (${placeholders})
-            `).get(stationId, startUtcIso, endUtcIso, ...backpoolTrackKeys)?.c ?? 0;
-          }
-          const percentBackpool = totalPlays > 0 ? (backpoolPlays / totalPlays) * 100 : 0;
-
           const genreRows = db.prepare(`
             select coalesce(m.genre, 'Unbekannt') as genre, count(*) as plays
             from plays p
@@ -893,7 +861,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
             total_tracks: Number(totalTracks),
             average_rotation_lifespan_days: Number(avgRotationLifespanDays.toFixed(2)),
             percent_new_tracks: Number(percentNewTracks.toFixed(2)),
-            percent_backpool: Number(percentBackpool.toFixed(2)),
             genre_distribution: genres
           });
         } finally {
@@ -1012,220 +979,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         } finally {
           /* shared db: closed on shutdown */
         }
-      } catch (error) {
-        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-      }
-    },
-
-    backpool: async (req, res) => {
-      let currentKey = null;
-      try {
-        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-        const from = req.query.from ? String(safeQueryValue(req.query.from)) : undefined;
-        const to = req.query.to ? String(safeQueryValue(req.query.to)) : undefined;
-        const rawYears = Number(safeQueryValue(req.query.years) ?? 5);
-        const rawMinPlays = Number(safeQueryValue(req.query.minPlays) ?? 1);
-        const rawTop = Number(safeQueryValue(req.query.top) ?? 20);
-        const rawRotationMinDailyPlays = Number(safeQueryValue(req.query.rotationMinDailyPlays) ?? 0.35);
-        const rawMinConfidence = Number(safeQueryValue(req.query.minConfidence) ?? 0.72);
-        const rawLowRotationMaxDailyPlays = Number(safeQueryValue(req.query.lowRotationMaxDailyPlays) ?? 2);
-        const rawRotationMinActiveDays = Number(safeQueryValue(req.query.rotationMinActiveDays) ?? 5);
-        const rawRotationMinSpanDays = Number(safeQueryValue(req.query.rotationMinSpanDays) ?? 28);
-        const rawRotationMinReleaseAgeDays = Number(safeQueryValue(req.query.rotationMinReleaseAgeDays) ?? 1095);
-        const rawMinTrackAgeDays = Number(safeQueryValue(req.query.minTrackAgeDays) ?? 30);
-        const rotationAdaptive = String(safeQueryValue(req.query.rotationAdaptive) ?? '1') !== '0';
-        const hydrate = String(safeQueryValue(req.query.hydrate) ?? '0') !== '0';
-        const rawMaxMetaLookups = Number(safeQueryValue(req.query.maxMetaLookups) ?? 80);
-        const maxLookupsRequested = Number.isFinite(rawMaxMetaLookups) ? Math.max(0, Math.min(rawMaxMetaLookups, 400)) : 80;
-        const effectiveMaxMetaLookups = hydrate
-          ? stationId
-            ? maxLookupsRequested
-            : Math.min(maxLookupsRequested, 40)
-          : 0;
-        const payload = {
-          from: from ?? null,
-          to: to ?? null,
-          years: Number.isFinite(rawYears) ? Math.max(1, Math.min(rawYears, 40)) : 5,
-          minTrackPlays: Number.isFinite(rawMinPlays) ? Math.max(1, Math.min(rawMinPlays, 500)) : 1,
-          top: Number.isFinite(rawTop) ? Math.max(1, Math.min(rawTop, 1000)) : 20,
-          rotationMinDailyPlays: Number.isFinite(rawRotationMinDailyPlays)
-            ? Math.max(0.01, Math.min(rawRotationMinDailyPlays, 24))
-            : 0.35,
-          minReleaseConfidence: Number.isFinite(rawMinConfidence) ? Math.max(0, Math.min(rawMinConfidence, 1)) : 0.72,
-          lowRotationMaxDailyPlays: Number.isFinite(rawLowRotationMaxDailyPlays)
-            ? Math.max(0.1, Math.min(rawLowRotationMaxDailyPlays, 24))
-            : 2,
-          rotationMinActiveDays: Number.isFinite(rawRotationMinActiveDays)
-            ? Math.max(1, Math.min(rawRotationMinActiveDays, 366))
-            : 5,
-          rotationMinSpanDays: Number.isFinite(rawRotationMinSpanDays)
-            ? Math.max(1, Math.min(rawRotationMinSpanDays, 366))
-            : 28,
-          rotationMinReleaseAgeDays: Number.isFinite(rawRotationMinReleaseAgeDays)
-            ? Math.max(0, Math.min(rawRotationMinReleaseAgeDays, 3660))
-            : 1095,
-          minTrackAgeDays: Number.isFinite(rawMinTrackAgeDays)
-            ? Math.max(1, Math.min(rawMinTrackAgeDays, 3660))
-            : 30,
-          rotationAdaptive,
-          stationId: stationId ?? null,
-          autoEnrichMissingRelease: hydrate,
-          maxMetadataLookups: effectiveMaxMetaLookups
-        };
-        const key = toBackpoolKey(payload);
-        currentKey = key;
-        const now = Date.now();
-        const cached = backpoolCache.get(key);
-        if (cached && now < cached.expiresAtMs) {
-          return res.json(cached.result);
-        }
-        if (backpoolInFlight.has(key)) {
-          const result = await backpoolInFlight.get(key);
-          return res.json(result);
-        }
-
-        const runPromise = runBackpoolAnalysis({
-          configPath,
-          dbPath,
-          from,
-          to,
-          years: payload.years,
-          minTrackPlays: payload.minTrackPlays,
-          top: payload.top,
-          rotationMinDailyPlays: payload.rotationMinDailyPlays,
-          minReleaseConfidence: payload.minReleaseConfidence,
-          lowRotationMaxDailyPlays: payload.lowRotationMaxDailyPlays,
-          rotationMinActiveDays: payload.rotationMinActiveDays,
-          rotationMinSpanDays: payload.rotationMinSpanDays,
-          rotationMinReleaseAgeDays: payload.rotationMinReleaseAgeDays,
-          minTrackAgeDays: payload.minTrackAgeDays,
-          rotationAdaptive: payload.rotationAdaptive,
-          stationId,
-          writeReport: false,
-          autoEnrichMissingRelease: hydrate,
-          persistToDb: false,
-          maxMetadataLookups: effectiveMaxMetaLookups,
-          logger
-        });
-        backpoolInFlight.set(key, runPromise);
-        const result = await runPromise;
-        backpoolInFlight.delete(key);
-        backpoolCache.set(key, { expiresAtMs: Date.now() + BACKPOOL_CACHE_TTL_MS, result });
-        return res.json(result);
-      } catch (error) {
-        if (currentKey && backpoolInFlight.has(currentKey)) {
-          backpoolInFlight.delete(currentKey);
-        }
-        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-      }
-    },
-
-    backpoolCatalog: (req, res) => {
-      try {
-        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-        const classification = req.query.classification ? String(safeQueryValue(req.query.classification)) : undefined;
-        const rawLimit = Number(safeQueryValue(req.query.limit) ?? 500);
-        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 2000)) : 500;
-
-        const db = sharedDb;
-        try {
-          const rows = listBackpoolTrackCatalog(db, { stationId, classification, limit });
-          return res.json({
-            stationId: stationId ?? null,
-            classification: classification ?? null,
-            rows
-          });
-        } finally {
-          /* shared db: closed on shutdown */
-        }
-      } catch (error) {
-        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-      }
-    },
-
-    backpoolSummary: (req, res) => {
-      try {
-        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : undefined;
-        const db = sharedDb;
-        try {
-          const data = listBackpoolStationSummary(db, { stationId });
-          return res.json({
-            stationId: stationId ?? null,
-            rows: Array.isArray(data) ? data : data ? [data] : []
-          });
-        } finally {
-          /* shared db: closed on shutdown */
-        }
-      } catch (error) {
-        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-      }
-    },
-
-    backpoolSimple: (req, res) => {
-      try {
-        const stationId = req.query.stationId ? String(safeQueryValue(req.query.stationId)) : null;
-        const minAgeDays = parseIntQuery(req.query.minAgeDays, { fallback: 180, min: 7, max: 3650, fieldName: 'minAgeDays' });
-        const recentDays = parseIntQuery(req.query.recentDays, { fallback: 60, min: 1, max: 3650, fieldName: 'recentDays' });
-        const minPlays = parseIntQuery(req.query.minPlays, { fallback: 2, min: 1, max: 500, fieldName: 'minPlays' });
-        const limit = parseIntQuery(req.query.limit, { fallback: 1000, min: 1, max: 5000, fieldName: 'limit' });
-
-        // Calculate cutoff dates in JavaScript to avoid SQLite string concat with parameters
-        const now = new Date();
-        const firstPlayedCutoff = new Date(now.getTime() - minAgeDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + 'T23:59:59Z';
-        const recentCutoff = new Date(now.getTime() - recentDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + 'T00:00:00Z';
-
-        const db = sharedDb;
-        const baseWhere = stationId ? 'WHERE station_id = ?' : '';
-        const params = stationId
-          ? [stationId, firstPlayedCutoff, recentCutoff, minPlays, limit]
-          : [firstPlayedCutoff, recentCutoff, minPlays, limit];
-
-        const rows = db.prepare(`
-          SELECT
-            station_id,
-            track_key,
-            min(artist) as artist,
-            min(title) as title,
-            count(*) as plays,
-            count(distinct substr(played_at_utc, 1, 10)) as active_days,
-            round(count(*) * 1.0 / max(1,
-              cast(julianday(max(played_at_utc)) - julianday(min(played_at_utc)) + 1 as integer)
-            ), 4) as plays_per_day,
-            min(played_at_utc) as first_played_at_utc,
-            max(played_at_utc) as last_played_at_utc,
-            cast(julianday('now') - julianday(min(played_at_utc)) as integer) as station_age_days
-          FROM plays
-          ${baseWhere}
-          GROUP BY station_id, track_key
-          HAVING
-            min(played_at_utc) <= ?
-            AND max(played_at_utc) >= ?
-            AND count(*) >= ?
-          ORDER BY station_id ASC, plays DESC
-          LIMIT ?
-        `).all(...params);
-
-        // Group by station
-        const byStation = new Map();
-        for (const row of rows) {
-          if (!byStation.has(row.station_id)) {
-            byStation.set(row.station_id, []);
-          }
-          byStation.get(row.station_id).push(row);
-        }
-        const stations = Array.from(byStation.entries()).map(([sid, tracks]) => ({
-          stationId: sid,
-          trackCount: tracks.length,
-          tracks
-        }));
-
-        return res.json({
-          minAgeDays,
-          recentDays,
-          minPlays,
-          totalTracks: rows.length,
-          stations
-        });
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
@@ -1409,7 +1162,6 @@ export function createApiApp({ configPath, dbPath, logger }) {
 
   app.get('/', (_req, res) => res.redirect('/dashboard'));
   app.get('/dashboard', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
-  app.get('/backpool', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'backpool.html')));
   app.get('/tracks', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'tracks.html')));
   app.get('/new-titles', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'new-titles.html')));
   app.get('/weekly-reports', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'weekly-reports.html')));
@@ -1438,10 +1190,6 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/reports/weekly-overview', handlers.weeklyOverview);
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
-  app.get('/api/insights/backpool', handlers.backpool);
-  app.get('/api/insights/backpool/catalog', handlers.backpoolCatalog);
-  app.get('/api/insights/backpool/summary', handlers.backpoolSummary);
-  app.get('/api/backpool/simple', handlers.backpoolSimple);
   app.post('/api/jobs/evaluate-daily', handlers.evaluateDaily);
 
   return app;
