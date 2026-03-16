@@ -355,14 +355,12 @@ function NewTitlesApp() {
           <${Chakra.SimpleGrid} columns=${{ base: 1, lg: 2, xl: 3 }} spacing="3">
             ${spotlight.map((row) => html`
               <${Chakra.Box} key=${row._id} border="1px solid" borderColor=${ui.lineColor} borderRadius="14px" p="3">
-                <${Chakra.HStack} justify="space-between" mb="2">
-                  <${Chakra.Badge} colorScheme=${row.ageDays == null ? 'gray' : row.ageDays <= 14 ? 'green' : 'orange'}>
-                    ${daysText(row.ageDays)}
-                  <//>
-                  <${Chakra.HStack} spacing="2">
-                    <${PreviewControl} previewUrl=${row.preview_url} externalUrl=${row.external_url} compact=${true} />
-                    <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500">Öffnen<//>
-                  <//>
+                <${Chakra.Badge} colorScheme=${row.ageDays == null ? 'gray' : row.ageDays <= 14 ? 'green' : 'orange'} mb="2">
+                  ${daysText(row.ageDays)}
+                <//>
+                <${Chakra.HStack} spacing="2" mb="2" flexWrap="wrap">
+                  <${PreviewControl} previewUrl=${row.preview_url} externalUrl=${row.external_url} compact=${true} />
+                  <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500">Öffnen<//>
                 <//>
                 <${Chakra.Text} fontWeight="700" color=${ui.textPrimary}>${row.artist} - ${row.title}<//>
                 <${Chakra.HStack} spacing="2" mt="1">

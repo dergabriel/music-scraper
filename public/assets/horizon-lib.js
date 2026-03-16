@@ -65,7 +65,6 @@ export const NAV_ITEMS = [
   { href: '/dashboard', label: 'Dashboard', key: 'dashboard' },
   { href: '/tracks', label: 'Statistik', key: 'tracks' },
   { href: '/new-titles', label: 'Neue Titel', key: 'new-titles' },
-  { href: '/backpool', label: 'Backpool', key: 'backpool' },
   { href: '/weekly-reports', label: 'Wochenberichte', key: 'weekly-reports' },
   { href: '/api/docs', label: 'API', key: 'api', external: true }
 ];
@@ -98,7 +97,8 @@ export function AppShell({ activeKey, title, subtitle, controls, children }) {
     <${Chakra.Flex} className="horizon-app-shell" minH="100vh" bg="appBg">
       <${Chakra.Box}
         as="aside"
-        display=${{ base: 'none', lg: 'block' }}
+        display=${{ base: 'none', lg: 'flex' }}
+        flexDirection="column"
         w="260px"
         borderRight="1px solid"
         borderColor="lineColor"
@@ -107,7 +107,7 @@ export function AppShell({ activeKey, title, subtitle, controls, children }) {
         py="6"
       >
         <${Chakra.Heading} size="md" color="textPrimary" mb="8">Music Scraper<//>
-        <${Chakra.VStack} align="stretch" spacing="2">
+        <${Chakra.VStack} align="stretch" spacing="2" flex="1">
           ${NAV_ITEMS.map((item) => html`
             <${Chakra.Link}
               key=${item.key}
@@ -125,6 +125,15 @@ export function AppShell({ activeKey, title, subtitle, controls, children }) {
               ${item.label}
             <//>
           `)}
+        <//>
+        <${Chakra.Box} mt="auto" pt="6" borderTop="1px solid" borderColor="lineColor">
+          <${Chakra.Text} fontSize="xs" color="textMuted" lineHeight="1.6">
+            Music Scraper${''}
+            <br />
+            Design: Horizon UI
+            <br />
+            © ${new Date().getFullYear()} Gabriel Becker
+          <//>
         <//>
       <//>
 
