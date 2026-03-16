@@ -1,9 +1,12 @@
 node_modules/
 *.sqlite
 *.db
+*.wal
+*.shm
 data/
+reports/
 .env
-.env.*
+.env*
 *.log
 .DS_Store
 reports/
