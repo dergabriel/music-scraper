@@ -1148,11 +1148,14 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
 
     myStationMissed: (req, res) => {
       try {
-        const config = loadConfig(configPath);
-        const myStation = config.stations.find((s) => s.my_station);
-        if (!myStation) return res.status(404).json({ error: 'Kein my_station in config.yaml definiert.' });
-
         const query = normalizeQuery(req.query);
+        const config = loadConfig(configPath);
+        const stationIdParam = query.stationId ? String(query.stationId).trim() : null;
+        const myStation = stationIdParam
+          ? config.stations.find((s) => s.id === stationIdParam)
+          : config.stations.find((s) => s.my_station);
+        if (!myStation) return res.status(404).json({ error: 'Unbekannter Sender.' });
+
         const days = parseIntQuery(query.days, { fallback: 7, min: 1, max: 90, fieldName: 'days' });
         const limit = parseIntQuery(query.limit, { fallback: 100, min: 1, max: 1000, fieldName: 'limit' });
         const minOtherPlays = parseIntQuery(query.minOtherPlays, { fallback: 3, min: 1, max: 9999, fieldName: 'minOtherPlays' });
@@ -1163,7 +1166,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const endUtcIso = nowBerlin.toUTC().toISO();
         const db = sharedDb;
 
-        // Tracks that OTHER stations played, but my station did NOT play in the period
         const rows = db.prepare(`
           select
             p.track_key,
@@ -1215,11 +1217,14 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
 
     myStationExclusives: (req, res) => {
       try {
-        const config = loadConfig(configPath);
-        const myStation = config.stations.find((s) => s.my_station);
-        if (!myStation) return res.status(404).json({ error: 'Kein my_station in config.yaml definiert.' });
-
         const query = normalizeQuery(req.query);
+        const config = loadConfig(configPath);
+        const stationIdParam = query.stationId ? String(query.stationId).trim() : null;
+        const myStation = stationIdParam
+          ? config.stations.find((s) => s.id === stationIdParam)
+          : config.stations.find((s) => s.my_station);
+        if (!myStation) return res.status(404).json({ error: 'Unbekannter Sender.' });
+
         const days = parseIntQuery(query.days, { fallback: 7, min: 1, max: 90, fieldName: 'days' });
         const limit = parseIntQuery(query.limit, { fallback: 100, min: 1, max: 1000, fieldName: 'limit' });
         const maxOtherStations = parseIntQuery(query.maxOtherStations, { fallback: 1, min: 0, max: 50, fieldName: 'maxOtherStations' });
@@ -1229,7 +1234,6 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const endUtcIso = nowBerlin.toUTC().toISO();
         const db = sharedDb;
 
-        // Tracks my station played, with low presence on other stations
         const rows = db.prepare(`
           select
             m.track_key,
@@ -1291,11 +1295,14 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
 
     myStationOverview: (req, res) => {
       try {
-        const config = loadConfig(configPath);
-        const myStation = config.stations.find((s) => s.my_station);
-        if (!myStation) return res.status(404).json({ error: 'Kein my_station in config.yaml definiert.' });
-
         const query = normalizeQuery(req.query);
+        const config = loadConfig(configPath);
+        const stationIdParam = query.stationId ? String(query.stationId).trim() : null;
+        const myStation = stationIdParam
+          ? config.stations.find((s) => s.id === stationIdParam)
+          : config.stations.find((s) => s.my_station);
+        if (!myStation) return res.status(404).json({ error: 'Unbekannter Sender.' });
+
         const days = parseIntQuery(query.days, { fallback: 7, min: 1, max: 90, fieldName: 'days' });
 
         const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
