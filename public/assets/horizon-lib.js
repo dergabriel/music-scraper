@@ -66,6 +66,7 @@ export const NAV_ITEMS = [
   { href: '/tracks', label: 'Statistik', key: 'tracks' },
   { href: '/new-titles', label: 'Neue Titel', key: 'new-titles' },
   { href: '/weekly-reports', label: 'Wochenberichte', key: 'weekly-reports' },
+  { href: '/my-station', label: 'Mein Sender', key: 'my-station' },
   { href: '/api/docs', label: 'API', key: 'api', external: true }
 ];
 

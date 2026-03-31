@@ -46,6 +46,7 @@ import { OnlineradioboxParser } from './parsers/onlineradiobox.js';
 import { DlfNovaParser } from './parsers/dlfNova.js';
 import { FluxFmParser } from './parsers/fluxfm.js';
 import { NrwLokalradiosJsonParser } from './parsers/nrwlokalradiosJson.js';
+import { LautfmJsonParser } from './parsers/lautfmJson.js';
 import { RadioMenuParser } from './parsers/radioMenu.js';
 import { GenericHtmlOrOnlineradioboxParser } from './parsers/genericHtmlOrOnlineradiobox.js';
 import { TrackVerifier } from './trackVerifier.js';
@@ -69,6 +70,8 @@ export function parserForStation(station) {
       return new GenericHtmlOrOnlineradioboxParser({ timezone: station.timezone });
     case 'nrwlokalradios_json':
       return new NrwLokalradiosJsonParser({ timezone: station.timezone });
+    case 'lautfm_json':
+      return new LautfmJsonParser({ timezone: station.timezone });
     case 'radiomenu':
       return new RadioMenuParser({ timezone: station.timezone });
     default:

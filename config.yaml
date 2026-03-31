@@ -1,4 +1,14 @@
 stations:
+  - id: "juka_radio"
+    name: "JUKA Radio"
+    playlist_url: "https://onlineradiobox.com/de/juka/playlist/"
+    fallback_urls:
+      - "https://onlineradiobox.com/de/jukaradio/playlist/"
+    parser: "onlineradiobox"
+    fetcher: "http"
+    timezone: "Europe/Berlin"
+    my_station: true
+
   - id: "planet_radio"
     name: "Planet Radio"
     playlist_url: "https://onlineradiobox.com/de/planetmore/playlist/"

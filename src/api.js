@@ -195,7 +195,7 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
     docs: (_req, res) => {
       res.json({
         name: 'Music Scraper API',
-        pages: ['GET /dashboard', 'GET /tracks', 'GET /new-titles'],
+        pages: ['GET /dashboard', 'GET /tracks', 'GET /new-titles', 'GET /my-station'],
         endpoints: [
           'GET /api/health',
           'GET /api/docs',
@@ -221,7 +221,10 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
           'GET /api/reports/weekly-overview?weekStart=YYYY-MM-DD&limit=50',
           'GET /api/reports/station/:stationId?weekStart=YYYY-MM-DD',
           'GET /api/insights/new-this-week?weekStart=YYYY-MM-DD&stationId=ID&limit=20&releaseYear=YYYY&maxReleaseAgeDays=730',
-          'POST /api/jobs/evaluate-daily {"date":"YYYY-MM-DD"}'
+          'POST /api/jobs/evaluate-daily {"date":"YYYY-MM-DD"}',
+          'GET /api/my-station/overview?days=7',
+          'GET /api/my-station/missed?days=7&minOtherPlays=3&minOtherStations=2&limit=100',
+          'GET /api/my-station/exclusives?days=7&maxOtherStations=1&limit=100'
         ]
       });
     },
@@ -1141,7 +1144,219 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
       }
-    }
+    },
+
+    myStationMissed: (req, res) => {
+      try {
+        const config = loadConfig(configPath);
+        const myStation = config.stations.find((s) => s.my_station);
+        if (!myStation) return res.status(404).json({ error: 'Kein my_station in config.yaml definiert.' });
+
+        const query = normalizeQuery(req.query);
+        const days = parseIntQuery(query.days, { fallback: 7, min: 1, max: 90, fieldName: 'days' });
+        const limit = parseIntQuery(query.limit, { fallback: 100, min: 1, max: 1000, fieldName: 'limit' });
+        const minOtherPlays = parseIntQuery(query.minOtherPlays, { fallback: 3, min: 1, max: 9999, fieldName: 'minOtherPlays' });
+        const minOtherStations = parseIntQuery(query.minOtherStations, { fallback: 2, min: 1, max: 50, fieldName: 'minOtherStations' });
+
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const startUtcIso = nowBerlin.minus({ days }).toUTC().toISO();
+        const endUtcIso = nowBerlin.toUTC().toISO();
+        const db = sharedDb;
+
+        // Tracks that OTHER stations played, but my station did NOT play in the period
+        const rows = db.prepare(`
+          select
+            p.track_key,
+            min(p.artist) as artist,
+            min(p.title) as title,
+            count(*) as other_plays,
+            count(distinct p.station_id) as other_stations,
+            min(p.played_at_utc) as first_seen_at_utc,
+            max(p.played_at_utc) as last_seen_at_utc
+          from plays p
+          where p.station_id != ?
+            and p.played_at_utc >= ?
+            and p.played_at_utc < ?
+            and p.track_key not in (
+              select distinct track_key
+              from plays
+              where station_id = ?
+                and played_at_utc >= ?
+                and played_at_utc < ?
+            )
+          group by p.track_key
+          having other_plays >= ? and other_stations >= ?
+          order by other_plays desc
+          limit ?
+        `).all(
+          myStation.id, startUtcIso, endUtcIso,
+          myStation.id, startUtcIso, endUtcIso,
+          minOtherPlays, minOtherStations, limit
+        );
+
+        return res.json({
+          my_station_id: myStation.id,
+          my_station_name: myStation.name,
+          window_days: days,
+          tracks: rows.map((r) => ({
+            track_key: r.track_key,
+            artist: r.artist,
+            title: r.title,
+            other_plays: Number(r.other_plays),
+            other_stations: Number(r.other_stations),
+            first_seen_at_utc: r.first_seen_at_utc,
+            last_seen_at_utc: r.last_seen_at_utc
+          }))
+        });
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    myStationExclusives: (req, res) => {
+      try {
+        const config = loadConfig(configPath);
+        const myStation = config.stations.find((s) => s.my_station);
+        if (!myStation) return res.status(404).json({ error: 'Kein my_station in config.yaml definiert.' });
+
+        const query = normalizeQuery(req.query);
+        const days = parseIntQuery(query.days, { fallback: 7, min: 1, max: 90, fieldName: 'days' });
+        const limit = parseIntQuery(query.limit, { fallback: 100, min: 1, max: 1000, fieldName: 'limit' });
+        const maxOtherStations = parseIntQuery(query.maxOtherStations, { fallback: 1, min: 0, max: 50, fieldName: 'maxOtherStations' });
+
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const startUtcIso = nowBerlin.minus({ days }).toUTC().toISO();
+        const endUtcIso = nowBerlin.toUTC().toISO();
+        const db = sharedDb;
+
+        // Tracks my station played, with low presence on other stations
+        const rows = db.prepare(`
+          select
+            m.track_key,
+            min(m.artist) as artist,
+            min(m.title) as title,
+            count(*) as my_plays,
+            (
+              select count(distinct station_id)
+              from plays o
+              where o.track_key = m.track_key
+                and o.station_id != ?
+                and o.played_at_utc >= ?
+                and o.played_at_utc < ?
+            ) as other_stations,
+            (
+              select count(*)
+              from plays o
+              where o.track_key = m.track_key
+                and o.station_id != ?
+                and o.played_at_utc >= ?
+                and o.played_at_utc < ?
+            ) as other_plays,
+            min(m.played_at_utc) as first_played_at_utc,
+            max(m.played_at_utc) as last_played_at_utc
+          from plays m
+          where m.station_id = ?
+            and m.played_at_utc >= ?
+            and m.played_at_utc < ?
+          group by m.track_key
+          having other_stations <= ?
+          order by my_plays desc
+          limit ?
+        `).all(
+          myStation.id, startUtcIso, endUtcIso,
+          myStation.id, startUtcIso, endUtcIso,
+          myStation.id, startUtcIso, endUtcIso,
+          maxOtherStations, limit
+        );
+
+        return res.json({
+          my_station_id: myStation.id,
+          my_station_name: myStation.name,
+          window_days: days,
+          tracks: rows.map((r) => ({
+            track_key: r.track_key,
+            artist: r.artist,
+            title: r.title,
+            my_plays: Number(r.my_plays),
+            other_stations: Number(r.other_stations),
+            other_plays: Number(r.other_plays),
+            first_played_at_utc: r.first_played_at_utc,
+            last_played_at_utc: r.last_played_at_utc
+          }))
+        });
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
+    myStationOverview: (req, res) => {
+      try {
+        const config = loadConfig(configPath);
+        const myStation = config.stations.find((s) => s.my_station);
+        if (!myStation) return res.status(404).json({ error: 'Kein my_station in config.yaml definiert.' });
+
+        const query = normalizeQuery(req.query);
+        const days = parseIntQuery(query.days, { fallback: 7, min: 1, max: 90, fieldName: 'days' });
+
+        const nowBerlin = DateTime.now().setZone(BERLIN_TZ);
+        const startUtcIso = nowBerlin.minus({ days }).toUTC().toISO();
+        const endUtcIso = nowBerlin.toUTC().toISO();
+        const db = sharedDb;
+
+        const myPlays = db.prepare(`
+          select count(*) as c from plays
+          where station_id = ? and played_at_utc >= ? and played_at_utc < ?
+        `).get(myStation.id, startUtcIso, endUtcIso)?.c ?? 0;
+
+        const myUniqueTracks = db.prepare(`
+          select count(distinct track_key) as c from plays
+          where station_id = ? and played_at_utc >= ? and played_at_utc < ?
+        `).get(myStation.id, startUtcIso, endUtcIso)?.c ?? 0;
+
+        const missedCount = db.prepare(`
+          select count(distinct p.track_key) as c
+          from plays p
+          where p.station_id != ?
+            and p.played_at_utc >= ?
+            and p.played_at_utc < ?
+            and p.track_key not in (
+              select distinct track_key from plays
+              where station_id = ? and played_at_utc >= ? and played_at_utc < ?
+            )
+        `).get(
+          myStation.id, startUtcIso, endUtcIso,
+          myStation.id, startUtcIso, endUtcIso
+        )?.c ?? 0;
+
+        const exclusivesCount = db.prepare(`
+          select count(distinct m.track_key) as c
+          from plays m
+          where m.station_id = ?
+            and m.played_at_utc >= ?
+            and m.played_at_utc < ?
+            and (
+              select count(distinct station_id) from plays o
+              where o.track_key = m.track_key and o.station_id != ?
+                and o.played_at_utc >= ? and o.played_at_utc < ?
+            ) = 0
+        `).get(
+          myStation.id, startUtcIso, endUtcIso,
+          myStation.id, startUtcIso, endUtcIso
+        )?.c ?? 0;
+
+        return res.json({
+          my_station_id: myStation.id,
+          my_station_name: myStation.name,
+          window_days: days,
+          my_plays: Number(myPlays),
+          my_unique_tracks: Number(myUniqueTracks),
+          missed_count: Number(missedCount),
+          exclusives_count: Number(exclusivesCount)
+        });
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
   };
 }
 
@@ -1165,6 +1380,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/tracks', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'tracks.html')));
   app.get('/new-titles', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'new-titles.html')));
   app.get('/weekly-reports', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'weekly-reports.html')));
+  app.get('/my-station', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'my-station.html')));
 
   app.get('/api/health', handlers.health);
   app.get('/api/docs', handlers.docs);
@@ -1191,6 +1407,9 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
   app.post('/api/jobs/evaluate-daily', handlers.evaluateDaily);
+  app.get('/api/my-station/overview', handlers.myStationOverview);
+  app.get('/api/my-station/missed', handlers.myStationMissed);
+  app.get('/api/my-station/exclusives', handlers.myStationExclusives);
 
   return app;
 }
