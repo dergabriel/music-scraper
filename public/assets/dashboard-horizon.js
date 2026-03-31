@@ -649,7 +649,7 @@ function LegacyStatsCharts({
 
     renderBarChart(stationBarNode, Array.isArray(stationsByPlays) ? stationsByPlays : []);
     renderSeriesByStationChart(stationSeriesNode, Array.isArray(stationsSeries) ? stationsSeries : [], 'day');
-  }, [bucket, bucketSeries, cumulativeSeries, from, stationsByPlays, stationsSeries, to]);
+  }, [bucket, bucketSeries, cumulativeSeries, from, selectedTrack, stationsByPlays, stationsSeries, to]);
 
   React.useEffect(() => {
     renderAllCharts();
