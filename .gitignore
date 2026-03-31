@@ -10,3 +10,5 @@ reports/
 *.log
 .DS_Store
 reports/
+*.sqlite-shm
+*.sqlite-wal
