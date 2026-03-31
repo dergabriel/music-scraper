@@ -1,129 +1,164 @@
-# Setup Guide
-
-## Ziel
-
-Nach diesem Setup kannst du:
-
-1. Senderdaten einsammeln
-2. Reports erzeugen
-3. das Dashboard lokal nutzen
+# Setup & Installation
 
 ## Voraussetzungen
 
-- macOS, Linux oder Windows
 - Node.js 20+
 - npm
 
-Prüfen:
-
 ```bash
-node -v
+node -v  # sollte v20 oder höher zeigen
 npm -v
 ```
 
-## Installation
+---
 
-Im Projektordner:
+## 1. Installation
 
 ```bash
+git clone https://github.com/dergabriel/music-scraper.git
+cd music-scraper
 npm install
+```
+
+Tests prüfen ob alles korrekt installiert ist:
+
+```bash
 npm test
 ```
 
-## Erster Lauf
+---
 
-### 1. Ingest starten
+## 2. Ersten Ingest starten
+
+Playlist-Daten von allen konfigurierten Sendern einlesen:
 
 ```bash
 node src/cli.js ingest --config config.yaml --db yrpa.sqlite
 ```
 
-Ergebnis: neue Plays landen in `yrpa.sqlite`.
+Die Daten landen in `yrpa.sqlite`. Beim ersten Lauf dauert das je nach Sender-Anzahl 1–3 Minuten.
 
-### 2. Wochenreport erzeugen
+---
+
+## 3. Tagesauswertung
+
+Damit die Charts im Dashboard Daten zeigen, muss einmal `evaluate-daily` laufen:
 
 ```bash
-node src/cli.js report --config config.yaml --week-start 2026-02-24 --csv
+node src/cli.js evaluate-daily --db yrpa.sqlite --date 2026-03-31
 ```
 
-Ergebnis:
+Für mehrere vergangene Tage auf einmal (Linux/macOS):
 
-- `reports/2026-02-24_weekly.md`
-- `reports/csv/*.csv`
+```bash
+for i in $(seq 0 13); do
+  date=$(date -d "$i days ago" +%Y-%m-%d 2>/dev/null || date -v-${i}d +%Y-%m-%d)
+  node src/cli.js evaluate-daily --db yrpa.sqlite --date $date
+done
+```
 
-### 3. API + Dashboard starten
+---
+
+## 4. Dashboard starten
 
 ```bash
 node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787
 ```
 
-Im Browser:
+Browser öffnen:
 
-- `http://localhost:8787/dashboard`
-- `http://localhost:8787/tracks`
-- `http://localhost:8787/api/docs`
+| Seite | URL |
+|---|---|
+| Dashboard | `http://localhost:8787/dashboard` |
+| Statistik | `http://localhost:8787/tracks` |
+| Neue Titel | `http://localhost:8787/new-titles` |
+| Mein Sender | `http://localhost:8787/my-station` |
+| Wochenberichte | `http://localhost:8787/weekly-reports` |
+| API Docs | `http://localhost:8787/api/docs` |
 
-## macOS ohne Terminal (Doppelklick)
+> Der Server startet einen internen Cron der stündlich automatisch neue Daten einliest. Kein externer Cronjob nötig.
 
-1. `setup-music-scraper.command` (einmalig)
-2. `start-music-scraper-api.command`
-3. Dashboard öffnen
+---
 
-Manuell Tageslauf:
+## macOS: Doppelklick-Start
 
-1. `run-music-scraper-daily-now.command`
-2. Ergebnisse in `reports/` prüfen
+Für den täglichen Betrieb ohne Terminal:
 
-## Wichtige Commands
+1. **`setup-music-scraper.command`** — einmalig ausführen (installiert Abhängigkeiten)
+2. **`start-music-scraper-api.command`** — startet Server + Dashboard
+
+---
+
+## Server-Betrieb (Linux/PM2)
+
+Für dauerhaften Betrieb auf einem Server:
 
 ```bash
-# tägliche Auswertung (empfohlen: gestern)
-node src/cli.js evaluate-daily --config config.yaml --date 2026-02-27
-
-# Coverage-Audit
-node src/cli.js audit-coverage --config config.yaml --date 2026-02-27
-
-# Backpool-Analyse
-node src/cli.js analyze-backpool --config config.yaml
-
-# kombinierter Job
-node src/cli.js daily-job --config config.yaml --make-report --audit-coverage
-
-# Datenpflege (Dublettten/Noise)
-node src/cli.js maintain-db --db yrpa.sqlite
+npm install -g pm2
+pm2 start "node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787" --name music-scraper
+pm2 save
+pm2 startup
 ```
 
-## Sender konfigurieren
+Updates einspielen:
 
-Datei: `config.yaml`
+```bash
+git pull && pm2 restart music-scraper
+```
 
-Wichtige Felder:
+---
 
-- `id`, `name`, `playlist_url`
-- `fallback_urls` (optional)
-- `parser`: `onlineradiobox`, `dlf_nova`, `fluxfm`, `generic_html`, `generic_html_or_onlineradiobox`
-- `fetcher`: `http` oder `playwright`
-- `timezone` (meist `Europe/Berlin`)
+## Alle CLI-Befehle
+
+```bash
+# Playlist-Daten einlesen
+node src/cli.js ingest --config config.yaml --db yrpa.sqlite
+
+# Tagesauswertung (Charts befüllen)
+node src/cli.js evaluate-daily --db yrpa.sqlite --date YYYY-MM-DD
+
+# Wochenreport erzeugen
+node src/cli.js report --config config.yaml --week-start YYYY-MM-DD --csv
+
+# Datenpflege (Dubletten, Noise, Jingles entfernen)
+node src/cli.js maintain-db --db yrpa.sqlite
+
+# Kombinierter Tagesjob
+node src/cli.js daily-job --config config.yaml --db yrpa.sqlite --make-report
+
+# Coverage prüfen
+node src/cli.js audit-coverage --config config.yaml --date YYYY-MM-DD
+```
+
+---
 
 ## Typische Probleme
 
-### Keine Daten bei einem Sender
+### Charts zeigen "Keine Daten im Zeitraum"
 
-- `playlist_url` prüfen
-- `fallback_urls` ergänzen
-- Parser prüfen (z. B. `generic_html_or_onlineradiobox`)
+`evaluate-daily` wurde noch nicht ausgeführt. Siehe Schritt 3.
 
-### Viele Junk-Titel/Jingles
+### Keine Plays bei einem Sender
 
-- `maintain-db` ausführen
-- station-spezifische Filter/Parser anpassen
+- `playlist_url` im Browser aufrufen und prüfen ob sie erreichbar ist
+- `fallback_urls` ergänzen (siehe [Sender hinzufügen](add-station.md))
+- Parser wechseln zu `generic_html_or_onlineradiobox`
 
-### API-Port belegt
+### Port bereits belegt
 
-- anderen Port nehmen, z. B. `--port 8788`
+```bash
+node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8788
+```
+
+### Viele Junk-Titel oder Jingles
+
+```bash
+node src/cli.js maintain-db --db yrpa.sqlite
+```
+
+---
 
 ## Nächste Schritte
 
-1. Cron/Task Scheduler für regelmäßigen Ingest setzen
-2. Coverage täglich prüfen
-3. Backpool regelmäßig neu berechnen
+- [Neuen Sender hinzufügen](add-station.md)
+- [API-Endpunkte erkunden](http://localhost:8787/api/docs)
