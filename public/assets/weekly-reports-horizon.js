@@ -99,7 +99,12 @@ function TopTracksTable({ tracks }) {
         <//>
         <${Chakra.Tbody}>
           ${tracks.map((row, index) => html`
-            <${Chakra.Tr} key=${row.track_key}>
+            <${Chakra.Tr}
+              key=${row.track_key}
+              cursor="pointer"
+              _hover=${{ bg: ui.subtleBg }}
+              onClick=${() => { window.location.href = `/dashboard?trackKey=${encodeURIComponent(row.track_key)}`; }}
+            >
               <${Chakra.Td} color=${ui.textMuted} fontSize="xs">${index + 1}<//>
               <${Chakra.Td} fontWeight="600">${row.artist}<//>
               <${Chakra.Td} color=${ui.textMuted}>${row.title}<//>
@@ -206,7 +211,12 @@ function StationReportPanel({ stationId, weekStart, stations }) {
         <${PanelCard} title="Top-Titel diese Woche" subtitle="Nach Plays sortiert">
           <${Chakra.VStack} align="stretch" spacing="1" maxH="400px" overflowY="auto" className="horizon-scroll">
             ${(r.topTracks || []).map((row, index) => html`
-              <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start">
+              <${Chakra.HStack}
+                key=${row.track_key}
+                justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start"
+                cursor="pointer" _hover=${{ bg: ui.subtleBg }}
+                onClick=${() => { window.location.href = `/dashboard?trackKey=${encodeURIComponent(row.track_key)}`; }}
+              >
                 <${Chakra.HStack} spacing="2" flex="1" minW="0" align="flex-start">
                   <${Chakra.Text} fontSize="xs" color=${ui.textMuted} flexShrink="0" w="5" textAlign="right" pt="0.5">${index + 1}<//>
                   <${Chakra.Box} flex="1" minW="0">
@@ -227,7 +237,12 @@ function StationReportPanel({ stationId, weekStart, stations }) {
               : html`
                 <${Chakra.VStack} align="stretch" spacing="1" maxH="170px" overflowY="auto" className="horizon-scroll">
                   ${(r.newTracks || []).map((row) => html`
-                    <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start">
+                    <${Chakra.HStack}
+                      key=${row.track_key}
+                      justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start"
+                      cursor="pointer" _hover=${{ bg: ui.subtleBg }}
+                      onClick=${() => { window.location.href = `/dashboard?trackKey=${encodeURIComponent(row.track_key)}`; }}
+                    >
                       <${Chakra.Box} flex="1" minW="0">
                         <${Chakra.Text} fontSize="sm" fontWeight="600">${row.artist}<//>
                         <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
@@ -245,7 +260,12 @@ function StationReportPanel({ stationId, weekStart, stations }) {
               : html`
                 <${Chakra.VStack} align="stretch" spacing="1" maxH="170px" overflowY="auto" className="horizon-scroll">
                   ${(r.movers?.topGainers || []).map((row) => html`
-                    <${Chakra.HStack} key=${row.track_key} justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start">
+                    <${Chakra.HStack}
+                      key=${row.track_key}
+                      justify="space-between" py="1" borderBottom="1px solid" borderColor=${ui.lineColor} align="flex-start"
+                      cursor="pointer" _hover=${{ bg: ui.subtleBg }}
+                      onClick=${() => { window.location.href = `/dashboard?trackKey=${encodeURIComponent(row.track_key)}`; }}
+                    >
                       <${Chakra.Box} flex="1" minW="0">
                         <${Chakra.Text} fontSize="sm" fontWeight="600">${row.artist}<//>
                         <${Chakra.Text} fontSize="xs" color=${ui.textMuted}>${row.title}<//>
