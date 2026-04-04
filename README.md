@@ -26,9 +26,11 @@ Music Scraper sammelt Playlisten von Radiosendern automatisch ein, normalisiert 
 
 ### Dashboard — Track-Katalog
 
-Durchsuchbare, sortierbare Liste aller Tracks mit Plays, Plays/Tag und Last-Seen. Per Klick auf „Öffnen" gelangt man zur Song-Detail-Seite. Winner/Loser-Buttons für schnelles Track-Merging direkt in der Tabelle.
+Durchsuchbare, sortierbare Liste aller Tracks mit Plays, Plays/Tag und Last-Seen. Die Kennzahlen (Gefundene Titel, Einsätze, Künstler) stehen direkt über der Tabelle. Per Klick auf „Öffnen" gelangt man zur Song-Detail-Seite. Winner/Loser-Buttons für schnelles Track-Merging direkt in der Tabelle.
 
-![Dashboard](docs/screenshots/dashboard.png)
+![Dashboard Light](docs/screenshots/dashboard.png)
+
+![Dashboard Dark](docs/screenshots/dashboard-dark.png)
 
 ---
 
@@ -36,7 +38,9 @@ Durchsuchbare, sortierbare Liste aller Tracks mit Plays, Plays/Tag und Last-Seen
 
 Jeder Track hat eine eigene Seite mit Score (0–100), Momentum, Sender-Breite und allen Plays-Metriken.
 
-![Song-Detail](docs/screenshots/track-detail.png)
+![Song-Detail Light](docs/screenshots/track-detail.png)
+
+![Song-Detail Dark](docs/screenshots/track-detail-dark.png)
 
 Weiter unten: Kumulierter Verlauf, Plays pro Zeitraum und Sender-Vergleich als Balkendiagramme.
 
@@ -64,7 +68,9 @@ Wähle deinen Sender aus und vergleiche ihn mit dem Rest des Markts. Zeigt verpa
 
 Automatisch generierte Übersichten mit Top-Tracks, Neueinsteigern, Absteigern und Sender-Vergleich — für jede abgelaufene Woche abrufbar.
 
-![Wochenberichte](docs/screenshots/weekly-reports.png)
+![Wochenberichte Light](docs/screenshots/weekly-reports.png)
+
+![Wochenberichte Dark](docs/screenshots/weekly-reports-dark.png)
 
 ---
 

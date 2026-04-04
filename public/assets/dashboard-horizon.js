@@ -509,15 +509,16 @@ function DashboardApp() {
         )
       ),
 
-      // Stats
-      React.createElement(Chakra.SimpleGrid, { columns: { base: 2, lg: 3 }, spacing: '3' },
-        React.createElement(StatCard, { label: 'Gefundene Titel', value: formatNumber(trackSummary.tracks) }),
-        React.createElement(StatCard, { label: 'Einsätze gesamt', value: formatNumber(trackSummary.plays) }),
-        React.createElement(StatCard, { label: 'Künstler', value: formatNumber(trackSummary.artists) })
-      ),
+      // Stats + Track list (grouped tightly so the section title sits directly below the KPIs)
+      React.createElement(Chakra.VStack, { align: 'stretch', spacing: '2' },
+        React.createElement(Chakra.SimpleGrid, { columns: { base: 2, lg: 3 }, spacing: '3' },
+          React.createElement(StatCard, { label: 'Gefundene Titel', value: formatNumber(trackSummary.tracks) }),
+          React.createElement(StatCard, { label: 'Einsätze gesamt', value: formatNumber(trackSummary.plays) }),
+          React.createElement(StatCard, { label: 'Künstler', value: formatNumber(trackSummary.artists) })
+        ),
 
-      // Track list
-      React.createElement(PanelCard, { title: 'Track-Liste', subtitle: loadingTracks ? 'Lade...' : `${formatNumber(sortedTracks.length)} geladen`, p: '0' },
+        // Track list
+        React.createElement(PanelCard, { title: 'Track-Liste', subtitle: loadingTracks ? 'Lade...' : `${formatNumber(sortedTracks.length)} geladen`, p: '0' },
         React.createElement(Chakra.TableContainer, { className: 'horizon-scroll' },
           React.createElement(Chakra.Table, { size: 'sm' },
             React.createElement(Chakra.Thead, { position: 'sticky', top: '0', bg: 'cardBg', zIndex: '1' },
@@ -569,7 +570,8 @@ function DashboardApp() {
             )
           )
         )
-      ),
+      ) // PanelCard Track-Liste
+      ), // end Stats+TrackList VStack
 
       // Admin Merge
       React.createElement(PanelCard, { title: 'Admin: Track-Merge' },
