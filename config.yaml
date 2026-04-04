@@ -60,7 +60,7 @@ stations:
 
   - id: "rpr1"
     name: "RPR1"
-    playlist_url: "https://onlineradiobox.com/de/rpr1/playlist/"
+    playlist_url: "https://onlineradiobox.com/de/rpr1de/playlist/"
     fallback_urls:
       - "https://www.phonostar.de/radio/rpr1/titel"
     parser: "onlineradiobox"
@@ -119,9 +119,7 @@ stations:
 
   - id: "rsh"
     name: "R.SH"
-    playlist_url: "https://onlineradiobox.com/de/rsh/playlist/"
-    fallback_urls:
-      - "https://www.phonostar.de/radio/rsh/titel"
+    playlist_url: "https://onlineradiobox.com/de/radiorsh/playlist/"
     parser: "onlineradiobox"
     fetcher: "http"
     timezone: "Europe/Berlin"
@@ -304,9 +302,6 @@ stations:
   - id: "capital_fm"
     name: "Capital FM"
     playlist_url: "https://radio.menu/stations/capitalfm-com-capital-fm/playlist/"
-    fallback_urls:
-      - "https://radio.menu/stations/capitalfm-com-capital-fm/"
-      - "https://onlineradiobox.com/uk/capitalfm/playlist/"
-    parser: "generic_html_or_onlineradiobox"
+    parser: "radiomenu"
     fetcher: "http"
     timezone: "Europe/London"

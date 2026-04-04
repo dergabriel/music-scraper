@@ -107,6 +107,51 @@ function extractRowsFromText(bodyText) {
 export class RadioMenuParser extends BaseParser {
   parse(html, sourceUrl) {
     const $ = cheerio.load(html);
+
+    // ── Strategy 1: radio.menu structured HTML ────────────────────────────
+    // Format: <time datetime="2026-04-04T15:37"> + <span class="artist font-bold"> + <span class="name">
+    const structured = this._parseStructured($, sourceUrl);
+    if (structured.length) return structured;
+
+    // ── Strategy 2: text-based fallback (HH:MM Artist - Title per line) ──
+    return this._parseTextBased($, sourceUrl);
+  }
+
+  _parseStructured($, sourceUrl) {
+    const seen = new Set();
+    const plays = [];
+
+    $('li').each((_, el) => {
+      const timeEl = $(el).find('time[datetime]');
+      if (!timeEl.length) return;
+
+      const datetime = timeEl.attr('datetime'); // e.g. "2026-04-04T15:37"
+      const artistEl = $(el).find('.artist, [class*="artist"]').first();
+      const titleEl  = $(el).find('.name, [class*="name"]').first();
+
+      if (!artistEl.length || !titleEl.length) return;
+
+      const artistRaw = cleanText(artistEl.text());
+      const titleRaw  = cleanText(titleEl.text());
+      if (!artistRaw || !titleRaw) return;
+      if (INVALID_TRACK_FRAGMENT.test(`${artistRaw} ${titleRaw}`)) return;
+      if (artistRaw.length > 120 || titleRaw.length > 180) return;
+
+      // Parse ISO datetime directly
+      const d = new Date(datetime);
+      if (isNaN(d.getTime())) return;
+
+      const key = `${d.toISOString()}|${artistRaw}|${titleRaw}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      plays.push({ playedAt: d, artistRaw, titleRaw, sourceUrl });
+    });
+
+    return plays;
+  }
+
+  _parseTextBased($, sourceUrl) {
     const rows = extractRowsFromText($('body').text());
     if (!rows.length) return [];
 
@@ -128,12 +173,7 @@ export class RadioMenuParser extends BaseParser {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      plays.push({
-        playedAt,
-        artistRaw: parsed.artistRaw,
-        titleRaw: parsed.titleRaw,
-        sourceUrl
-      });
+      plays.push({ playedAt, artistRaw: parsed.artistRaw, titleRaw: parsed.titleRaw, sourceUrl });
     }
 
     return plays;
