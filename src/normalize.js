@@ -25,8 +25,12 @@ const CONFLICT_HEADLINE_PATTERN =
   /\b(angriff|angriffe|eskalation|konflikt|gegenschlag|gegenschläge)\b/i;
 const AD_DURATION_PATTERN =
   /\b(?:\d{1,3}\s*(?:sec|sek|sekunden)|kw\s*\d{1,2})\b/i;
+const CALENDAR_WEEK_PATTERN =
+  /\bkw\s*\d{1,2}\b/i;
 const NON_MUSIC_CONTEXT_PATTERN =
   /\((handel|retail|werbung|promo)\)/i;
+const STATION_NAME_IN_TITLE_PATTERN =
+  /(?:[-–]\s*(?:radio|top\s*40|hitradio|antenne|energy|sunshine|rock\s*fm|planet\s*radio|bigfm|jam\s*fm)|^antenne\s+\w)/i;
 const STATION_SLOGAN_PATTERN =
   /\bmehr\s+musik\b.*\bmehr\s+abwechslung\b|\bmehr\s+\w+\b.*\bmehr\s+\w+\b.*\bmehr\s+\w+\b|\bniedersachs(?:en|e)\b/i;
 const DATE_AMPERSAND_PREFIX_PATTERN =
@@ -392,6 +396,8 @@ export function isLikelyNoiseTrack(artistRaw, titleRaw, { stationName = '', stat
   if (BROADCAST_BULLETIN_PATTERN.test(combined)) return true;
   if (AD_BRAND_PATTERN.test(combined)) return true;
   if (AD_DURATION_PATTERN.test(combined) && AD_BRAND_PATTERN.test(combined)) return true;
+  if (CALENDAR_WEEK_PATTERN.test(title)) return true;
+  if (STATION_NAME_IN_TITLE_PATTERN.test(title)) return true;
   if (looksLikeEventScheduleLine(artist, title)) return true;
   if (looksLikeEditorialOrBulletin(combined)) return true;
   if (containsAnyStationTerm(combined, stationName, stationId) && /(?:show|nacht|studio|live|haus|sendung|ard|nachrichten|news)/i.test(combined)) return true;
