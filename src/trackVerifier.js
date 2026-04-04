@@ -310,7 +310,22 @@ export class TrackVerifier {
     }
 
     try {
-      const result = await verifyWithItunes(track);
+      let result = await verifyWithItunes(track);
+
+      // If not found, retry with artist/title swapped (catches parser inversions)
+      if (result.verifiedExists === false) {
+        const swapped = { ...track, artist: track.title, title: track.artist };
+        const swappedResult = await verifyWithItunes(swapped).catch(() => null);
+        if (swappedResult?.verifiedExists === true && swappedResult.confidence > result.confidence) {
+          this.logger?.info?.(
+            { trackKey: track.trackKey, artist: track.artist, title: track.title },
+            'artist/title appear swapped — rejecting track'
+          );
+          // Still reject: we can't auto-fix the swap reliably, treat as noise
+          result = { ...result, verifiedExists: false, swappedDetected: true };
+        }
+      }
+
       let spotifyMatch = null;
       try {
         spotifyMatch = await searchTrackOnSpotify(track.artist, track.title, {
