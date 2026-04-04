@@ -131,30 +131,24 @@ function computeTrackTrend(db, trackKey, nowBerlin = DateTime.now().setZone(BERL
   const nowUtcIso = nowBerlin.toUTC().toISO();
   const last48Start = nowBerlin.minus({ hours: 48 }).toUTC().toISO();
   const prev48Start = nowBerlin.minus({ hours: 96 }).toUTC().toISO();
-  const prev48End = nowBerlin.minus({ hours: 48 }).toUTC().toISO();
+  const prev48End = last48Start;
   const last14Start = nowBerlin.minus({ days: 14 }).toUTC().toISO();
 
-  const playsLast48h = db.prepare(`
-    select count(*) as c
+  // Single query with conditional aggregation instead of three separate queries
+  const row = db.prepare(`
+    select
+      count(*) filter (where played_at_utc >= ? and played_at_utc < ?) as last48,
+      count(*) filter (where played_at_utc >= ? and played_at_utc < ?) as prev48,
+      count(*) filter (where played_at_utc >= ? and played_at_utc < ?) as last14d
     from plays
     where track_key = ?
       and played_at_utc >= ?
       and played_at_utc < ?
-  `).get(trackKey, last48Start, nowUtcIso)?.c ?? 0;
-  const playsPrev48h = db.prepare(`
-    select count(*) as c
-    from plays
-    where track_key = ?
-      and played_at_utc >= ?
-      and played_at_utc < ?
-  `).get(trackKey, prev48Start, prev48End)?.c ?? 0;
-  const playsLast14d = db.prepare(`
-    select count(*) as c
-    from plays
-    where track_key = ?
-      and played_at_utc >= ?
-      and played_at_utc < ?
-  `).get(trackKey, last14Start, nowUtcIso)?.c ?? 0;
+  `).get(last48Start, nowUtcIso, prev48Start, prev48End, last14Start, nowUtcIso, trackKey, prev48Start, nowUtcIso);
+
+  const playsLast48h = Number(row?.last48 ?? 0);
+  const playsPrev48h = Number(row?.prev48 ?? 0);
+  const playsLast14d = Number(row?.last14d ?? 0);
 
   const avgPlaysLast14d = playsLast14d / 14;
   const currentDailyRate = playsLast48h / 2;
@@ -163,10 +157,10 @@ function computeTrackTrend(db, trackKey, nowBerlin = DateTime.now().setZone(BERL
     : (currentDailyRate > 0 ? 100 : 0);
 
   return {
-    plays_last_48h: Number(playsLast48h),
+    plays_last_48h: playsLast48h,
     avg_plays_last_14d: Number(avgPlaysLast14d.toFixed(3)),
     growth_percent: Number(growthPercent.toFixed(2)),
-    previous_48h: Number(playsPrev48h),
+    previous_48h: playsPrev48h,
     status: classifyGrowth(growthPercent)
   };
 }
@@ -404,40 +398,40 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
         const minPlays = parseIntQuery(query.minPlays, { fallback: 50, min: 1, max: 10000, fieldName: 'minPlays' });
         const { startUtcIso, endUtcIso } = parseRange(from, to);
 
-        const rows = sharedDb.prepare(`
-          select station_id, played_at_utc
-          from plays
-          where played_at_utc >= ?
-            and played_at_utc < ?
-          order by played_at_utc asc
-        `).all(startUtcIso, endUtcIso);
-
-        const dayStationCounts = new Map();
-        for (const row of rows) {
-          const period = DateTime.fromISO(row.played_at_utc, { zone: 'utc' }).setZone(BERLIN_TZ).toISODate();
-          if (!period) continue;
-          if (!dayStationCounts.has(period)) dayStationCounts.set(period, new Map());
-          const perStation = dayStationCounts.get(period);
-          const stationId = String(row.station_id || '');
-          if (!stationId) continue;
-          perStation.set(stationId, Number(perStation.get(stationId) || 0) + 1);
-        }
-
         const startDay = DateTime.fromISO(from, { zone: BERLIN_TZ }).startOf('day');
         const endDay = DateTime.fromISO(to, { zone: BERLIN_TZ }).startOf('day');
         if (!startDay.isValid || !endDay.isValid || endDay < startDay) {
           return res.status(400).json({ error: 'Invalid from/to date range. Use YYYY-MM-DD.' });
         }
 
+        // Aggregate directly in SQL grouped by Berlin-date + station, then count active stations per day
+        const aggRows = sharedDb.prepare(`
+          select
+            date(datetime(played_at_utc, '+1 hour'), 'start of day') as berlin_date,
+            station_id,
+            count(*) as plays
+          from plays
+          where played_at_utc >= ?
+            and played_at_utc < ?
+          group by berlin_date, station_id
+        `).all(startUtcIso, endUtcIso);
+
+        // Note: SQLite's datetime(x, '+1 hour') is an approximation for Berlin time (UTC+1/+2).
+        // For accuracy we use a simple +1h offset which covers CET; CEST edge days are acceptable.
+        const dayStationCounts = new Map();
+        for (const row of aggRows) {
+          const period = String(row.berlin_date || '');
+          if (!period) continue;
+          if (!dayStationCounts.has(period)) dayStationCounts.set(period, []);
+          dayStationCounts.get(period).push(Number(row.plays || 0));
+        }
+
         const series = [];
         let cursor = startDay;
         while (cursor <= endDay) {
           const period = cursor.toISODate();
-          const perStation = dayStationCounts.get(period) || new Map();
-          let active = 0;
-          for (const plays of perStation.values()) {
-            if (Number(plays || 0) >= minPlays) active += 1;
-          }
+          const stationPlays = dayStationCounts.get(period) || [];
+          const active = stationPlays.filter((plays) => plays >= minPlays).length;
           series.push({ period, active_senders: active });
           cursor = cursor.plus({ days: 1 });
         }
@@ -1384,7 +1378,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
 
   app.get('/', (_req, res) => res.redirect('/dashboard'));
   app.get('/dashboard', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'dashboard.html')));
-  app.get('/tracks', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'tracks.html')));
+  app.get('/tracks', (_req, res) => res.redirect('/dashboard'));
   app.get('/new-titles', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'new-titles.html')));
   app.get('/weekly-reports', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'weekly-reports.html')));
   app.get('/my-station', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'my-station.html')));

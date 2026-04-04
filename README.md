@@ -2,15 +2,13 @@
 
 **Radio-Analyse-Tool für Sender, die wissen wollen, was gerade läuft.**
 
-> Dieses Tool ist durch Vibecoding entstanden — entwickelt mit Claude als KI-Partner, der den Code größtenteils geschrieben hat, während die Ideen und Anforderungen von einem Radiosender kamen.
+> Entstanden durch Vibecoding — entwickelt mit Claude als KI-Partner. Die Ideen und Anforderungen kamen von einem Radiosender, den Code hat Claude geschrieben.
 
 ---
 
 ## Was ist Music Scraper?
 
-Music Scraper ist ein Open-Source-Tool, das Playlisten von Radiosendern automatisch einsammelt, normalisiert und auswertet. Es richtet sich an **Radiosender**, **Musikredakteure** und alle, die verstehen wollen, was im Radio gerade gespielt wird.
-
-### Wofür ist das gut?
+Music Scraper sammelt Playlisten von Radiosendern automatisch ein, normalisiert sie und wertet sie aus. Es richtet sich an **Radiosender**, **Musikredakteure** und alle, die verstehen wollen, was im Radio gerade gespielt wird.
 
 | Anwendungsfall | Beschreibung |
 |---|---|
@@ -26,11 +24,47 @@ Music Scraper ist ein Open-Source-Tool, das Playlisten von Radiosendern automati
 
 ## Screenshots
 
-```
-Dashboard → Statistik → Neue Titel → Mein Sender → Wochenberichte
-```
+### Dashboard — Track-Katalog
 
-Alle Seiten sind über das Dashboard erreichbar unter `http://localhost:8787`.
+Durchsuchbare, sortierbare Liste aller Tracks mit Plays, Plays/Tag und Last-Seen. Per Klick auf „Öffnen" gelangt man zur Song-Detail-Seite. Winner/Loser-Buttons für schnelles Track-Merging direkt in der Tabelle.
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+---
+
+### Song-Detail — Performance & Analyse
+
+Jeder Track hat eine eigene Seite mit Score (0–100), Momentum, Sender-Breite und allen Plays-Metriken.
+
+![Song-Detail](docs/screenshots/track-detail.png)
+
+Weiter unten: Kumulierter Verlauf, Plays pro Zeitraum und Sender-Vergleich als Balkendiagramme.
+
+![Song-Detail Charts](docs/screenshots/track-detail-charts.png)
+
+---
+
+### Neue Titel
+
+Alle Songs, die in einem bestimmten Zeitraum zum ersten Mal gespielt wurden — filterbar nach Sender, Release-Datum, Einsatzhäufigkeit und Qualitäts-Score.
+
+![Neue Titel](docs/screenshots/new-titles.png)
+
+---
+
+### Mein Sender
+
+Wähle deinen Sender aus und vergleiche ihn mit dem Rest des Markts. Zeigt verpasste Tracks, Geheimtipps und Sender-spezifische Rotation.
+
+![Mein Sender](docs/screenshots/my-station.png)
+
+---
+
+### Wochenberichte
+
+Automatisch generierte Übersichten mit Top-Tracks, Neueinsteigern, Absteigern und Sender-Vergleich — für jede abgelaufene Woche abrufbar.
+
+![Wochenberichte](docs/screenshots/weekly-reports.png)
 
 ---
 
@@ -42,7 +76,7 @@ Alle Seiten sind über das Dashboard erreichbar unter `http://localhost:8787`.
 - npm
 
 ```bash
-node -v  # sollte 20+ zeigen
+node -v   # sollte 20+ zeigen
 npm -v
 ```
 
@@ -54,20 +88,33 @@ cd music-scraper
 npm install
 ```
 
+### Konfiguration
+
+Kopiere die Beispielkonfiguration und passe sie an:
+
+```bash
+cp config.yaml.example config.yaml
+```
+
+Mindestens einen Sender in `config.yaml` eintragen — siehe [Sender hinzufügen](docs/add-station.md).
+
 ### Starten
 
 ```bash
-node src/cli.js api --config config.yaml --db yrpa.sqlite --port 8787
+node src/cli.js api --config config.yaml --db music-scraper.sqlite --port 8787
 ```
 
-Browser öffnen:
+Der Server startet auf Port `8787`. Beim ersten Start werden automatisch die Playlisten der konfigurierten Sender eingesammelt.
 
-- **Dashboard** → `http://localhost:8787/dashboard`
-- **Statistik** → `http://localhost:8787/tracks`
-- **Neue Titel** → `http://localhost:8787/new-titles`
-- **Mein Sender** → `http://localhost:8787/my-station`
-- **Wochenberichte** → `http://localhost:8787/weekly-reports`
-- **API Docs** → `http://localhost:8787/api/docs`
+### Seiten
+
+| Seite | Pfad |
+|---|---|
+| Dashboard | `/dashboard` |
+| Neue Titel | `/new-titles` |
+| Mein Sender | `/my-station` |
+| Wochenberichte | `/weekly-reports` |
+| API Docs | `/api/docs` |
 
 > Der interne Cron läuft stündlich automatisch — kein externer Cronjob nötig.
 
@@ -77,37 +124,39 @@ Browser öffnen:
 
 - [Setup & Installation](docs/setup.md) — Schritt-für-Schritt-Einrichtung
 - [Neuen Sender hinzufügen](docs/add-station.md) — Sender konfigurieren
-- [API-Endpunkte](http://localhost:8787/api/docs) — alle REST-Endpoints
 
 ---
 
 ## Funktionsübersicht
 
 ### Dashboard
-Überblick über alle Sender: Top-Tracks, tägliche Plays, Trends, Song-Performance. Jeder Track ist klickbar — zeigt Verlauf, Sender-Vergleich und Metadaten.
+Überblick über alle gesammelten Tracks mit Plays, Plays/Tag und letztem Einsatz. Filter nach Sender, Sortierung nach verschiedenen Metriken. Winner/Loser-Buttons für schnelles Merging von Duplikaten direkt in der Tabelle.
 
-### Statistik
-Durchsuchbares Track-Archiv mit Filterung nach Sender, Zeitraum und Genre.
+### Song-Detail
+Jeder Track öffnet eine eigene Seite mit:
+- **Score 0–100** aus Beliebtheit, Momentum, Sender-Breite und Plays/Tag
+- Kumulierter Verlauf, Plays pro Zeitraum, Sender-Vergleich
+- Rohdaten vs. panelbereinigter Trend
+- Zeitraum frei wählbar (7d / 30d / 90d / YTD / custom)
 
 ### Neue Titel
-Alle Songs, die in einem bestimmten Zeitraum zum ersten Mal gespielt wurden — gefiltert nach Release-Datum, Sender und Relevanz.
+Alle Songs, die in einem bestimmten Zeitraum erstmals gespielt wurden — filterbar nach Sender, Release-Datum, Min/Max-Einsätze und Qualitätsscore.
 
 ### Mein Sender
 Das Kernstück für Redakteure: Wähle deinen eigenen Sender und vergleiche ihn direkt mit dem Rest.
-
 - **Verpasste Tracks** — Songs die andere Sender oft spielen, dein Sender aber nicht
-- **Geheimtipps** — Songs die nur dein Sender (oder kaum jemand sonst) spielt
+- **Geheimtipps** — Songs die (fast) nur dein Sender spielt
 - Sender-Auswahl wird im Browser gespeichert
 
 ### Wochenberichte
-Automatisch generierte Markdown/CSV-Berichte mit Top-Tracks, Neueinsteigern und Absteigern.
+Automatisch generierte Berichte mit Top-Tracks, Neueinsteigern und Absteigern — für jede abgelaufene Woche abrufbar.
 
 ---
 
 ## Technologie
 
 - **Backend**: Node.js, Express, SQLite (better-sqlite3)
-- **Frontend**: Vanilla JS, Chakra UI, Plotly
+- **Frontend**: Vanilla JS, React (via CDN), Chakra UI
 - **Datensammlung**: HTTP-Fetcher + Playwright für JS-gerenderte Seiten
 - **Parser**: onlineradiobox, DLF Nova, laut.fm JSON, NRW Lokalradios, generisches HTML
 
