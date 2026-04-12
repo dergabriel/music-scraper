@@ -27,7 +27,9 @@ function cleanContent(text) {
     .replace(/^live\s*\|\s*/i, '')
     .replace(/^uhr\s*[-|]\s*/i, '')
     .replace(/^[|-]\s*/, '')
-    .replace(/^platz\s+\d+\s*:\s*/i, '');
+    .replace(/^platz\s+\d+\s*:\s*/i, '')
+    .replace(/\s*\(platz\s+\d+\)\s*$/i, '')
+    .trim();
 }
 
 function artistCueScore(text) {
@@ -46,6 +48,12 @@ function detectDashOrientation(lines) {
   let titleArtistVotes = 0;
 
   for (const raw of lines) {
+    // "TITLE (Platz N) - ARTIST" format: left side is the title
+    if (/\(platz\s+\d+\)/i.test(raw)) {
+      titleArtistVotes += 2;
+      continue;
+    }
+
     const cleaned = cleanContent(raw);
     if (!cleaned) continue;
 

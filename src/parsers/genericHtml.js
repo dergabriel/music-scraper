@@ -15,7 +15,9 @@ function cleanContent(text) {
     .replace(/^live\s*\|\s*/i, '')
     .replace(/^uhr\s*[-|]\s*/i, '')
     .replace(/^[|-]\s*/, '')
-    .replace(/^platz\s+\d+\s*:\s*/i, '');
+    .replace(/^platz\s+\d+\s*:\s*/i, '')
+    .replace(/\s*\(platz\s+\d+\)\s*$/i, '')
+    .trim();
 }
 
 function splitArtistTitle(line) {
