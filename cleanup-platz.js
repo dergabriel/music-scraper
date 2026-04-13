@@ -10,10 +10,9 @@
  * Aufruf: node cleanup-platz.js [--dry-run] [--db /pfad/zur/db.sqlite]
  */
 
-import Database from 'better-sqlite3';
-import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openDb } from './src/db.js';
 import { normalizeArtistTitle } from './src/normalize.js';
 import { buildFallbackSongKey } from './src/dedup.js';
 
@@ -27,9 +26,7 @@ const dbPath = dbIdx >= 0 ? args[dbIdx + 1] : path.join(__dirname, 'music-scrape
 console.log(`DB: ${dbPath}`);
 console.log(`Mode: ${dryRun ? 'DRY RUN (keine Änderungen)' : 'LIVE'}\n`);
 
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const db = openDb(dbPath);
 
 function stripPlatzSuffix(text) {
   return String(text ?? '').replace(/\s*\(platz\s+\d+\)\s*$/i, '').trim();
