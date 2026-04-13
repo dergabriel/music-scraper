@@ -186,6 +186,8 @@ function parseFromBodyText($, timezone, sourceUrl) {
     .map((x) => x.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 
+  const dashOrientation = detectDashOrientation(lines);
+
   const plays = [];
   const seen = new Set();
 
@@ -200,7 +202,7 @@ function parseFromBodyText($, timezone, sourceUrl) {
     const timeRaw = timed[1];
     const content = cleanContent(timed[2]);
 
-    const song = split(content);
+    const song = split(content, { dashOrientation });
     if (!song) continue;
 
     const playedAt = parsePlayedAt(timeRaw, timezone);
@@ -223,7 +225,7 @@ function parseFromBodyText($, timezone, sourceUrl) {
     let content = cleanContent(match[2]);
     if (!content || looksLikeNoise(content)) continue;
 
-    const song = split(content);
+    const song = split(content, { dashOrientation });
     if (!song) continue;
 
     const playedAt = parsePlayedAt(timeRaw, timezone);
@@ -249,6 +251,12 @@ export class OnlineradioboxParser extends BaseParser {
 
     const plays = [];
     const rows = $('.history-item, .playlist__row, tr').toArray();
+
+    const sampleTexts = rows
+      .map((row) => $(row).text().replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const dashOrientation = detectDashOrientation(sampleTexts);
+
     for (const row of rows) {
       const el = $(row);
       const timeRaw =
@@ -264,10 +272,10 @@ export class OnlineradioboxParser extends BaseParser {
 
       let item;
       if (artistRaw && titleRaw) {
-        item = validateParts(artistRaw, titleRaw);
+        item = validateParts(cleanContent(artistRaw), cleanContent(titleRaw));
       } else {
         const text = el.text().replace(/\s+/g, ' ').trim();
-        item = split(cleanContent(text.replace(timeRaw, '')));
+        item = split(cleanContent(text.replace(timeRaw, '')), { dashOrientation });
       }
 
       if (!item) continue;
