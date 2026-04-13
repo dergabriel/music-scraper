@@ -295,6 +295,16 @@ function mergeTrackPair(db, { winnerKey, loserKey, artist, title }, metadataByTr
   const winnerMeta = metadataByTrackKey.get(winnerKey) ?? null;
   const loserMeta = metadataByTrackKey.get(loserKey) ?? null;
 
+  // Loser-Identität vor dem Merge ermitteln, damit wir sie in canonical_map eintragen können
+  const loserIdentityRow = db.prepare(`
+    select min(artist) as artist, min(title) as title from plays where track_key = ?
+  `).get(loserKey);
+  const loserArtistRaw = String(loserMeta?.artist ?? loserIdentityRow?.artist ?? '').trim();
+  const loserTitleRaw = String(loserMeta?.title ?? loserIdentityRow?.title ?? '').trim();
+  const loserNormalized = loserArtistRaw && loserTitleRaw
+    ? normalizeArtistTitle(loserArtistRaw, loserTitleRaw)
+    : null;
+
   const playsUpdated = db.prepare(`
     update plays
     set track_key = ?, artist = ?, title = ?
@@ -349,6 +359,21 @@ function mergeTrackPair(db, { winnerKey, loserKey, artist, title }, metadataByTr
   if (loserMeta) {
     db.prepare('delete from track_metadata where track_key = ?').run(loserKey);
     metadataByTrackKey.delete(loserKey);
+  }
+
+  // Loser-Variante in canonical_map eintragen, damit zukünftige Ingests direkt auf den Winner gemappt werden
+  if (loserNormalized?.title && loserNormalized?.artist) {
+    const loserCanonicalTitle = canonicalTitleKey(loserNormalized.title);
+    const loserCanonicalPrimary = primaryArtist(loserNormalized.artist);
+    if (loserCanonicalTitle && loserCanonicalPrimary) {
+      db.prepare(`
+        insert into canonical_map(canonical_title, canonical_primary_artist, canonical_track_key, updated_at_utc)
+        values (?, ?, ?, ?)
+        on conflict(canonical_title, canonical_primary_artist) do update set
+          canonical_track_key = excluded.canonical_track_key,
+          updated_at_utc = excluded.updated_at_utc
+      `).run(loserCanonicalTitle, loserCanonicalPrimary, winnerKey, new Date().toISOString());
+    }
   }
 
   return { playsUpdated, dailyRowsRebuilt, metadataUpdated };
