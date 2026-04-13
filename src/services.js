@@ -27,7 +27,9 @@ import {
   clearDailyStatsForDate,
   upsertDailyStationStat,
   upsertDailyTrackStat,
-  upsertDailyOverallTrackStat
+  upsertDailyOverallTrackStat,
+  blockTrack,
+  loadBlockedTrackKeys
 } from './db.js';
 import {
   BERLIN_TZ,
@@ -1150,6 +1152,55 @@ export function runManualTrackMerge({
   return result;
 }
 
+export function deleteAndBlockTrack({ dbPath, trackKey, logger }) {
+  const db = openDb(dbPath);
+
+  const identity = db.prepare(`
+    select min(artist) as artist, min(title) as title from plays where track_key = ?
+  `).get(trackKey);
+  const metaIdentity = db.prepare('select artist, title from track_metadata where track_key = ?').get(trackKey);
+  const artistRaw = String(metaIdentity?.artist ?? identity?.artist ?? '').trim();
+  const titleRaw = String(metaIdentity?.title ?? identity?.title ?? '').trim();
+
+  if (!artistRaw && !titleRaw) {
+    db.close();
+    throw new Error(`trackKey nicht gefunden: ${trackKey}`);
+  }
+
+  const normalized = normalizeArtistTitle(artistRaw, titleRaw);
+  const canonicalTitle = canonicalTitleKey(normalized.title);
+  const canonicalPrimary = primaryArtist(normalized.artist);
+
+  const tx = db.transaction(() => {
+    // Alle Plays löschen
+    const playsDeleted = db.prepare('delete from plays where track_key = ?').run(trackKey).changes;
+
+    // Metadata löschen
+    db.prepare('delete from track_metadata where track_key = ?').run(trackKey);
+
+    // Tagesstatistiken löschen
+    db.prepare('delete from daily_track_stats where track_key = ?').run(trackKey);
+    db.prepare('delete from daily_overall_track_stats where track_key = ?').run(trackKey);
+
+    // Canonical map bereinigen
+    db.prepare('delete from canonical_map where canonical_track_key = ?').run(trackKey);
+
+    // Blocklist-Eintrag: verhindert zukünftige Ingests
+    if (canonicalTitle && canonicalPrimary) {
+      blockTrack(db, { canonicalTitle, canonicalPrimaryArtist: canonicalPrimary, trackKey });
+    }
+
+    return playsDeleted;
+  });
+
+  const playsDeleted = tx();
+  db.close();
+
+  const result = { trackKey, artistRaw, titleRaw, playsDeleted };
+  logger?.info(result, 'track deleted and blocked');
+  return result;
+}
+
 export function runCanonicalArtistMaintenance({ dbPath, dryRun = false, maxPairs = 5000, logger }) {
   const db = openDb(dbPath);
   const candidateRows = db.prepare(`
@@ -1442,6 +1493,7 @@ export async function runIngest({ configPath, dbPath, logger }) {
     const key = canonicalMapKey(row.canonical_title, row.canonical_primary_artist);
     canonicalLookup.set(key, row.canonical_track_key);
   }
+  const blockedKeys = loadBlockedTrackKeys(db);
   const canonicalIdentityByTrackKey = new Map();
   const resolveCanonicalIdentity = (trackKey) => {
     if (canonicalIdentityByTrackKey.has(trackKey)) {
@@ -1614,6 +1666,11 @@ export async function runIngest({ configPath, dbPath, logger }) {
         const canonicalTitleKey = normalizeTitleForMatch(canonicalTitle);
         const canonicalPrimaryArtist = primaryArtist(canonicalArtist);
         const mapKey = canonicalMapKey(canonicalTitleKey, canonicalPrimaryArtist);
+
+        if (blockedKeys.has(mapKey)) {
+          skippedNoise += 1;
+          continue;
+        }
         const mappedTrackKey = canonicalLookup.get(mapKey);
         if (mappedTrackKey) {
           canonicalTrackKey = mappedTrackKey;

@@ -192,6 +192,18 @@ function TracksApp() {
     }
   }, [debouncedSearch, stationId, limit, selectedTrackKey]);
 
+  const deleteTrack = async (trackKey, artistTitle) => {
+    if (!window.confirm(`"${artistTitle}" wirklich löschen und dauerhaft blockieren?\n\nDieser Track wird aus allen Plays entfernt und nie mehr gespeichert.`)) return;
+    try {
+      await apiFetch(`/api/admin/tracks/${encodeURIComponent(trackKey)}`, { method: 'DELETE' });
+      toast({ status: 'success', title: 'Track gelöscht', description: `"${artistTitle}" wurde entfernt und blockiert.` });
+      await loadRows();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast({ status: 'error', title: 'Löschen fehlgeschlagen', description: msg });
+    }
+  };
+
   const runMerge = async () => {
     if (!winnerTrackKey.trim() || !loserTrackKey.trim()) {
       setMergeState('Bitte beide Track Keys ausfüllen.');
@@ -407,6 +419,7 @@ function TracksApp() {
                           />
                           <${Chakra.Button} size="xs" variant="outline" onClick=${(event) => { event.stopPropagation(); setWinnerTrackKey(row.track_key); }}>Als Winner<//>
                           <${Chakra.Button} size="xs" variant="outline" onClick=${(event) => { event.stopPropagation(); setLoserTrackKey(row.track_key); }}>Als Loser<//>
+                          <${Chakra.Button} size="xs" colorScheme="red" variant="outline" onClick=${(event) => { event.stopPropagation(); deleteTrack(row.track_key, `${row.artist} - ${row.title}`); }}>Löschen<//>
                         <//>
                       <//>
                     <//>

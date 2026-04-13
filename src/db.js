@@ -79,6 +79,17 @@ function ensureTrackMetadataColumns(db) {
   db.exec('create index if not exists idx_plays_track_played_at on plays(track_key, played_at_utc)');
   db.exec('create index if not exists idx_plays_track_station_played_at on plays(track_key, station_id, played_at_utc)');
   db.exec('create index if not exists idx_track_metadata_isrc on track_metadata(isrc)');
+
+  db.exec(`
+    create table if not exists blocked_tracks(
+      canonical_title text not null,
+      canonical_primary_artist text not null,
+      track_key text not null,
+      blocked_at_utc text not null,
+      primary key(canonical_title, canonical_primary_artist)
+    )
+  `);
+  db.exec('create index if not exists idx_blocked_tracks_key on blocked_tracks(track_key)');
 }
 
 export function upsertStation(db, station) {
@@ -872,6 +883,23 @@ export function dedupeStationByMinGapSeconds(db, stationId, minGapSeconds = 60) 
 
   const after = q.prepare('dedupeStationByMinGapSeconds:after', 'select count(*) as c from plays where station_id = ?').get(stationId)?.c ?? 0;
   return { before, after, removed: Math.max(0, before - after), minGapSeconds: safeGapSeconds };
+}
+
+export function blockTrack(db, { canonicalTitle, canonicalPrimaryArtist, trackKey }) {
+  db.prepare(`
+    insert into blocked_tracks(canonical_title, canonical_primary_artist, track_key, blocked_at_utc)
+    values (?, ?, ?, ?)
+    on conflict(canonical_title, canonical_primary_artist) do update set
+      track_key = excluded.track_key,
+      blocked_at_utc = excluded.blocked_at_utc
+  `).run(canonicalTitle, canonicalPrimaryArtist, trackKey, new Date().toISOString());
+}
+
+export function loadBlockedTrackKeys(db) {
+  return new Set(
+    db.prepare('select canonical_title, canonical_primary_artist from blocked_tracks').all()
+      .map((r) => `${r.canonical_title}||${r.canonical_primary_artist}`)
+  );
 }
 
 

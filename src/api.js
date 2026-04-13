@@ -19,7 +19,7 @@ import {
 } from './db.js';
 import { BERLIN_TZ, buildWeekRanges } from './time.js';
 import { buildTrackSeries, buildTrackSeriesByStation, buildTrackTotals } from './trends.js';
-import { runDailyEvaluation, runManualTrackMerge } from './services.js';
+import { runDailyEvaluation, runManualTrackMerge, deleteAndBlockTrack } from './services.js';
 import { loadConfig } from './config.js';
 import { buildStationAnalytics } from './analytics.js';
 import { TrackVerifier } from './trackVerifier.js';
@@ -884,6 +884,17 @@ export function createApiHandlers({ configPath, dbPath, logger }) {
       }
     },
 
+    adminDeleteTrack: (req, res) => {
+      try {
+        const trackKey = String(req.params.trackKey || '').trim();
+        if (!trackKey) return res.status(400).json({ error: 'trackKey fehlt' });
+        const result = deleteAndBlockTrack({ dbPath, trackKey, logger });
+        return res.json({ ok: true, ...result });
+      } catch (error) {
+        return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+
     trackMeta: (req, res) => {
       try {
         const trackKey = req.params.trackKey;
@@ -1404,6 +1415,7 @@ export function createApiApp({ configPath, dbPath, logger }) {
   app.get('/api/outliers', handlers.outliers);
   app.get('/api/stations/:stationId/profile', handlers.stationProfile);
   app.post('/api/admin/merge-tracks', handlers.adminMergeTracks);
+  app.delete('/api/admin/tracks/:trackKey', handlers.adminDeleteTrack);
   app.get('/api/reports/weekly-overview', handlers.weeklyOverview);
   app.get('/api/reports/station/:stationId', handlers.stationReport);
   app.get('/api/insights/new-this-week', handlers.newThisWeek);
