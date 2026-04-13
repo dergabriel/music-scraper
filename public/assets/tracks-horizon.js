@@ -409,8 +409,8 @@ function TracksApp() {
                       <${Chakra.Td}>${formatDateTime(row.first_played_at_utc)}<//>
                       <${Chakra.Td}>${formatDateTime(row.last_played_at_utc)}<//>
                       <${Chakra.Td}>
-                          <${Chakra.VStack} align="start" spacing="1">
-                            <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500" onClick=${(event) => event.stopPropagation()}>Öffnen<//>
+                        <${Chakra.VStack} align="start" spacing="1">
+                          <${Chakra.Link} href=${`/dashboard?trackKey=${encodeURIComponent(row.track_key)}`} color="blue.500" onClick=${(event) => event.stopPropagation()}>Öffnen<//>
                           <${PreviewControl}
                             previewUrl=${row.preview_url}
                             externalUrl=${row.external_url}
