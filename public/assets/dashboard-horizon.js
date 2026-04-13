@@ -434,6 +434,18 @@ function DashboardApp() {
     }
   }, [debouncedSearch, stationId, trackLimit]);
 
+  const deleteTrack = async (trackKey, artistTitle) => {
+    if (!window.confirm(`"${artistTitle}" wirklich löschen und dauerhaft blockieren?\n\nDieser Track wird aus allen Plays entfernt und nie mehr gespeichert.`)) return;
+    try {
+      await apiFetch(`/api/admin/tracks/${encodeURIComponent(trackKey)}`, { method: 'DELETE' });
+      toast({ status: 'success', title: 'Track gelöscht', description: `"${artistTitle}" wurde entfernt und blockiert.` });
+      await loadTracks();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast({ status: 'error', title: 'Löschen fehlgeschlagen', description: msg });
+    }
+  };
+
   const runMerge = async () => {
     if (!winnerTrackKey.trim() || !loserTrackKey.trim()) {
       setMergeState('Bitte beide Track Keys ausfüllen.');
@@ -529,6 +541,7 @@ function DashboardApp() {
                 React.createElement(Chakra.Th, { py: '3' }, 'Letztes Play'),
                 React.createElement(Chakra.Th, { py: '3' }, 'Winner'),
                 React.createElement(Chakra.Th, { py: '3' }, 'Loser'),
+                React.createElement(Chakra.Th, { py: '3' }, ''),
                 React.createElement(Chakra.Th, { py: '3' }, '')
               )
             ),
@@ -562,10 +575,16 @@ function DashboardApp() {
                     rightIcon: React.createElement(Icons.ExternalLinkIcon),
                     onClick: () => openTrackPage(row.track_key)
                   }, 'Öffnen')
+                ),
+                React.createElement(Chakra.Td, { py: '2' },
+                  React.createElement(Chakra.Button, {
+                    size: 'xs', colorScheme: 'red', variant: 'outline',
+                    onClick: () => deleteTrack(row.track_key, `${row.artist} - ${row.title}`)
+                  }, 'Löschen')
                 )
               )),
               sortedTracks.length === 0 && !loadingTracks
-                ? React.createElement(Chakra.Tr, null, React.createElement(Chakra.Td, { colSpan: 7, color: ui.textMuted, py: '6', textAlign: 'center' }, 'Keine Treffer. Filter anpassen.'))
+                ? React.createElement(Chakra.Tr, null, React.createElement(Chakra.Td, { colSpan: 8, color: ui.textMuted, py: '6', textAlign: 'center' }, 'Keine Treffer. Filter anpassen.'))
                 : null
             )
           )
