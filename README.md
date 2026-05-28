@@ -104,6 +104,17 @@ cp config.yaml.example config.yaml
 
 Mindestens einen Sender in `config.yaml` eintragen — siehe [Sender hinzufügen](docs/add-station.md).
 
+Optionale Umgebungsvariablen (`.env` oder Shell-Export):
+
+| Variable | Beschreibung | Standard |
+|---|---|---|
+| `SPOTIFY_CLIENT_ID` | Spotify API Client-ID | — |
+| `SPOTIFY_CLIENT_SECRET` | Spotify API Client-Secret | — |
+| `YRPA_VERIFY_ALL_TRACKS` | Alle Tracks gegen iTunes/Spotify prüfen (statt nur verdächtige) | `0` |
+| `YRPA_TRACK_VERIFY` | Track-Verifikation aktivieren (`0` = aus) | `1` |
+| `YRPA_DEDUP_COOLDOWN_SECONDS` | Cooldown-Fenster für Dedup in Sekunden | `900` |
+| `LOG_LEVEL` | Pino Log-Level (`info`, `debug`, …) | `info` |
+
 ### Starten
 
 ```bash
@@ -126,6 +137,161 @@ Der Server startet auf Port `8787`. Beim ersten Start werden automatisch die Pla
 
 ---
 
+## CLI-Befehle
+
+Alle Befehle laufen über `node src/cli.js <befehl> [optionen]`.
+
+### `api` — Webserver starten
+
+```bash
+node src/cli.js api --config config.yaml --db music-scraper.sqlite --port 8787
+```
+
+Startet den Express-Server inklusive automatischem Startup-Ingest und Wartung.
+
+| Option | Beschreibung | Standard |
+|---|---|---|
+| `--config` | Pfad zur `config.yaml` | — (Pflicht) |
+| `--db` | Pfad zur SQLite-Datenbankdatei | `yrpa.sqlite` |
+| `--port` | HTTP-Port | `8787` |
+| `--no-startup-report` | Kein automatischer Ingest beim Start | — |
+
+---
+
+### `ingest` — Playlisten einlesen
+
+```bash
+node src/cli.js ingest --config config.yaml --db music-scraper.sqlite
+```
+
+Ruft alle konfigurierten Sender ab und schreibt neue Plays in die Datenbank.
+
+---
+
+### `daily-job` — Tagesroutine
+
+```bash
+node src/cli.js daily-job --config config.yaml --db music-scraper.sqlite --make-report
+```
+
+Führt Ingest, Wartung, Tagesauswertung und optional Wochenbericht in einem Schritt aus. Geeignet für einen täglichen Cronjob.
+
+| Option | Beschreibung |
+|---|---|
+| `--make-report` | Wochenbericht für die aktuelle Woche erstellen |
+| `--audit-coverage` | Coverage-Audit für gestern durchführen |
+
+---
+
+### `maintain-db` — Datenbank-Wartung
+
+```bash
+node src/cli.js maintain-db --db music-scraper.sqlite [--dry-run]
+```
+
+Führt alle Wartungsroutinen aus: Noise-Bereinigung, Duplikat-Merge, Canonical-Map-Refresh, Orientierungs-Korrektur (Artist/Title-Dreher), Release-Datum-Backfill.
+
+| Option | Beschreibung | Standard |
+|---|---|---|
+| `--dry-run` | Nur Vorschau, keine Schreibvorgänge | — |
+| `--max-pairs` | Maximale Merge-Paare pro Lauf | `5000` |
+
+---
+
+### `backfill-deezer` — Deezer-Backfill für Altdaten
+
+Gleicht alle bestehenden Tracks gegen die öffentliche Deezer-API ab und korrigiert dabei Interpreten-Dreher, Sender-Zusätze im Titelnamen und Schreibfehler-Varianten. Der Lauf ist **wiederaufnehmbar** — bereits geprüfte Tracks werden übersprungen.
+
+```bash
+# Erst Dry-Run zur Sichtung:
+node src/cli.js backfill-deezer --db music-scraper.sqlite --dry-run --limit 200
+
+# Echter Lauf (in Chargen empfohlen wegen Rate-Limiting):
+node src/cli.js backfill-deezer --db music-scraper.sqlite --no-dry-run --limit 500
+```
+
+| Option | Beschreibung | Standard |
+|---|---|---|
+| `--dry-run` | Nur Vorschau — kein versehentliches Schreiben | `true` |
+| `--no-dry-run` | Änderungen tatsächlich in die DB schreiben | — |
+| `--limit N` | Maximale Anzahl Tracks pro Lauf | alle |
+| `--cache-days N` | Tracks jünger als N Tage überspringen | `30` |
+
+Bei HTTP 429 pausiert das Skript automatisch mit exponentiellem Backoff.
+
+---
+
+### `report` / `report-station` — Wochenbericht generieren
+
+```bash
+node src/cli.js report --config config.yaml --db music-scraper.sqlite --week-start 2025-05-19 --csv
+node src/cli.js report-station --config config.yaml --db music-scraper.sqlite --station-id dlf_nova --week-start 2025-05-19
+```
+
+---
+
+### `cleanup-station` — Sender-Duplikate bereinigen
+
+```bash
+node src/cli.js cleanup-station --station-id dlf_nova --db music-scraper.sqlite --min-gap-seconds 150
+```
+
+---
+
+## Datenqualität & Normalisierung
+
+Die Kernkomponente `src/normalize.js` bereinigt Rohdaten aus verschiedenen Quellen in ein einheitliches Format. Folgende Probleme werden automatisch behandelt:
+
+| Problem | Beispiel roh | Ergebnis |
+|---|---|---|
+| Groß-/Kleinschreibung & Whitespace | `"  The WEEKND "` | `the weeknd` |
+| Feature-Guests im Titel | `"Song ft. Guest"` | `song` |
+| Remix-/Edit-Klammern | `"Track (Radio Edit)"` | `track` |
+| Promo-Marker | `"*NEU* Song"` | `song` |
+| Chart-Platzierungen im Titel | `"TOP 799 SIMPLE LIFE"` | `simple life` |
+| Jahreszahlen in Klammern | `"No Scrubs (1999)"` | `no scrubs` |
+| Apostroph-Jahreszahlen | `"Wonderful Life '25"` | `wonderful life` |
+| Slash in Künstlernamen | `"huntr/x"`, `"AC/DC"` | bleibt ein Name (`huntr-x`, `ac-dc`) |
+| Slash als Trennzeichen | `"Artist A / Artist B"` | zwei Artists |
+| Abkürzungen mit Leerzeichen | `"T L C"` | `tlc` |
+| Trailing-Dash-Artefakte | `"leony -"` | `leony` |
+| Remix-Prefix im Artistfeld | `"Notion Remix - Chrystal x Notion"` | `chrystal & notion` |
+| Joiner-Varianten | `&`, `,`, `;`, ` x `, ` and ` | einheitlicher Artist-Key |
+| Tippfehler-Varianten | `"dj jose"` vs `"dj josa"` | Levenshtein-1-Toleranz beim Matching |
+| Interpreten-Dreher | Artist/Title vertauscht | Korrektur via Deezer/iTunes |
+
+Der `canonicalTrackKey` (SHA-1-Hash aus normalisiertem Artist + Title) ist die stabile Identität eines Tracks in der Datenbank — unabhängig davon, wie verschiedene Sender denselben Song benennen.
+
+---
+
+## Deezer-Integration
+
+Jeder neu ingested Track wird gegen die **öffentliche Deezer-API** abgeglichen (kein API-Key nötig). Bei einem sicheren Treffer (Confidence ≥ 0.8) wird die saubere Deezer-Schreibweise als kanonische Identität übernommen.
+
+- **Throttling**: max. 45 Requests / 5 Sekunden (unter dem öffentlichen Limit von 50/5s)
+- **Caching**: geprüfte Tracks werden 6 Stunden lang nicht erneut abgefragt
+- **Swap-Erkennung**: bei keinem Treffer wird automatisch Artist/Title vertauscht probiert
+- **Backfill**: `backfill-deezer`-Befehl korrigiert vorhandene Altdaten
+
+Die Confidence-Gewichtung: Titel 45 %, Primary-Artist 25 %, Artist-Overlap 20 %, Dauer 10 %.
+
+---
+
+## Datenbankschema (Übersicht)
+
+| Tabelle | Inhalt |
+|---|---|
+| `plays` | Jeder einzelne Airplay-Eintrag (Station, Zeitpunkt, Artist, Title, TrackKey) |
+| `track_metadata` | Metadaten pro Track: ISRC, Deezer-ID, Spotify-ID, Release-Datum, Genre, Confidence |
+| `canonical_map` | Mapping von normalisierten Varianten auf den kanonischen TrackKey |
+| `daily_track_stats` | Tagesaggregat pro Track und Sender |
+| `daily_overall_track_stats` | Tagesaggregat pro Track über alle Sender |
+| `daily_station_stats` | Tagesaggregat pro Sender (Plays, Unique Tracks) |
+| `blocked_tracks` | Dauerhaft gesperrte Tracks (werden beim Ingest übersprungen) |
+| `stations` | Senderliste mit Name, URL, Timezone |
+
+---
+
 ## Dokumentation
 
 - [Setup & Installation](docs/setup.md) — Schritt-für-Schritt-Einrichtung
@@ -133,38 +299,31 @@ Der Server startet auf Port `8787`. Beim ersten Start werden automatisch die Pla
 
 ---
 
-## Funktionsübersicht
-
-### Dashboard
-Überblick über alle gesammelten Tracks mit Plays, Plays/Tag und letztem Einsatz. Filter nach Sender, Sortierung nach verschiedenen Metriken. Winner/Loser-Buttons für schnelles Merging von Duplikaten direkt in der Tabelle.
-
-### Song-Detail
-Jeder Track öffnet eine eigene Seite mit:
-- **Score 0–100** aus Beliebtheit, Momentum, Sender-Breite und Plays/Tag
-- Kumulierter Verlauf, Plays pro Zeitraum, Sender-Vergleich
-- Rohdaten vs. panelbereinigter Trend
-- Zeitraum frei wählbar (7d / 30d / 90d / YTD / custom)
-
-### Neue Titel
-Alle Songs, die in einem bestimmten Zeitraum erstmals gespielt wurden — filterbar nach Sender, Release-Datum, Min/Max-Einsätze und Qualitätsscore.
-
-### Mein Sender
-Das Kernstück für Redakteure: Wähle deinen eigenen Sender und vergleiche ihn direkt mit dem Rest.
-- **Verpasste Tracks** — Songs die andere Sender oft spielen, dein Sender aber nicht
-- **Geheimtipps** — Songs die (fast) nur dein Sender spielt
-- Sender-Auswahl wird im Browser gespeichert
-
-### Wochenberichte
-Automatisch generierte Berichte mit Top-Tracks, Neueinsteigern und Absteigern — für jede abgelaufene Woche abrufbar.
-
----
-
 ## Technologie
 
-- **Backend**: Node.js, Express, SQLite (better-sqlite3)
-- **Frontend**: Vanilla JS, React (via CDN), Chakra UI
-- **Datensammlung**: HTTP-Fetcher + Playwright für JS-gerenderte Seiten
-- **Parser**: onlineradiobox, DLF Nova, laut.fm JSON, NRW Lokalradios, generisches HTML
+| Schicht | Stack |
+|---|---|
+| **Runtime** | Node.js 20, ES Modules |
+| **Web-Framework** | Express 4 |
+| **Datenbank** | SQLite via better-sqlite3 |
+| **Frontend** | Vanilla JS, React (CDN), Chakra UI |
+| **HTTP-Fetcher** | undici, Playwright (für JS-gerenderte Seiten) |
+| **HTML-Parsing** | cheerio |
+| **Logging** | pino |
+| **Tests** | Vitest (98 Tests, alle grün) |
+| **Externe APIs** | Deezer (öffentlich, kein Key), Spotify (optional), iTunes Search |
+
+### Unterstützte Parser
+
+| Parser-ID | Sender-Typ |
+|---|---|
+| `onlineradiobox` | Die meisten DE/AT/UK-Sender über onlineradiobox.com |
+| `dlf_nova` | Deutschlandfunk Nova |
+| `nrwlokalradios_json` | NRW Lokalradios (JSON-API) |
+| `lautfm_json` | laut.fm-Sender |
+| `radiomenu` | radio.menu-Sender (z.B. Capital FM) |
+| `generic_html` | Generisches HTML-Parsing |
+| `generic_html_or_onlineradiobox` | Automatische Erkennung |
 
 ---
 
