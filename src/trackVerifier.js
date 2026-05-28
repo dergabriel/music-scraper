@@ -316,13 +316,19 @@ export class TrackVerifier {
       if (result.verifiedExists === false) {
         const swapped = { ...track, artist: track.title, title: track.artist };
         const swappedResult = await verifyWithItunes(swapped).catch(() => null);
-        if (swappedResult?.verifiedExists === true && swappedResult.confidence > result.confidence) {
+        if (swappedResult?.verifiedExists === true && swappedResult.confidence > result.confidence + 0.1) {
           this.logger?.info?.(
-            { trackKey: track.trackKey, artist: track.artist, title: track.title },
-            'artist/title appear swapped — rejecting track'
+            { trackKey: track.trackKey, artist: track.artist, title: track.title, swappedConfidence: swappedResult.confidence },
+            'artist/title appear swapped — correcting to swapped identity'
           );
-          // Still reject: we can't auto-fix the swap reliably, treat as noise
-          result = { ...result, verifiedExists: false, swappedDetected: true };
+          // Return corrected swap signal so the ingest path can adopt the fixed names
+          result = {
+            ...swappedResult,
+            verifiedExists: true,
+            swappedDetected: true,
+            correctedArtist: track.title,
+            correctedTitle: track.artist
+          };
         }
       }
 
@@ -351,7 +357,7 @@ export class TrackVerifier {
       return { ...finalResult, fromCache: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger?.warn({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'track verification failed; accepting track as unknown');
+      this.logger?.warn?.({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'track verification failed; accepting track as unknown');
       upsertTrackMetadata(this.db, toDbRow(track, {
         verifiedExists: null,
         confidence: null,
@@ -380,7 +386,7 @@ export class TrackVerifier {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!quietErrors) {
-        this.logger?.warn({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'metadata refresh failed');
+        this.logger?.warn?.({ trackKey: track.trackKey, artist: track.artist, title: track.title, error: message }, 'metadata refresh failed');
       }
       upsertTrackMetadata(this.db, toDbRow(track, {
         verifiedExists: cached?.verified_exists === null || cached?.verified_exists === undefined
@@ -405,12 +411,12 @@ export class TrackVerifier {
         const chartResult = await fetchAppleMusicChartRank(track, 'de');
         chart = chartResult.chart;
         if (chartResult.feedIssue && chartResult.shouldWarn) {
-          this.logger?.warn({ country: 'DE', error: chartResult.feedIssue }, 'chart feed unavailable; skipping chart rank enrichment temporarily');
+          this.logger?.warn?.({ country: 'DE', error: chartResult.feedIssue }, 'chart feed unavailable; skipping chart rank enrichment temporarily');
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!quietErrors) {
-          this.logger?.warn({ error: message }, 'chart rank lookup failed');
+          this.logger?.warn?.({ error: message }, 'chart rank lookup failed');
         }
       }
     }
@@ -424,7 +430,7 @@ export class TrackVerifier {
     } catch (error) {
       if (!quietErrors) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger?.warn({ error: message, trackKey: track.trackKey }, 'spotify enrichment skipped');
+        this.logger?.warn?.({ error: message, trackKey: track.trackKey }, 'spotify enrichment skipped');
       }
     }
 

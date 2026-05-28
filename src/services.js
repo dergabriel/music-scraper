@@ -21,6 +21,7 @@ import {
   getStationTotalPlays,
   getStationPlayedAtUtc,
   getOverallTrackCounts,
+  getTrackMetadata,
   upsertTrackMetadata,
   upsertCanonicalMap,
   listCanonicalMap,
@@ -52,6 +53,9 @@ import { LautfmJsonParser } from './parsers/lautfmJson.js';
 import { RadioMenuParser } from './parsers/radioMenu.js';
 import { GenericHtmlOrOnlineradioboxParser } from './parsers/genericHtmlOrOnlineradiobox.js';
 import { TrackVerifier } from './trackVerifier.js';
+import { searchTrackOnDeezer } from './integrations/deezer.js';
+
+const DEEZER_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours — same cadence as track metadata cache
 import {
   DEFAULT_DEDUP_COOLDOWN_SECONDS,
   shouldDedupByCooldown,
@@ -252,12 +256,12 @@ function artistOverlapRatio(a, b) {
   return common / Math.max(1, Math.min(aa.size, bb.size));
 }
 
-function normalizeTitleForMatch(value) {
+export function normalizeTitleForMatch(value) {
   const normalized = normalizeArtistTitle('', value).title;
   return canonicalTitleKey(normalized);
 }
 
-function canonicalMapKey(canonicalTitle, canonicalPrimaryArtist) {
+export function canonicalMapKey(canonicalTitle, canonicalPrimaryArtist) {
   return `${canonicalTitle}||${canonicalPrimaryArtist}`;
 }
 
@@ -293,7 +297,7 @@ function trackStableIdentity(metaRow) {
  * moves all plays, rebuilds daily stats, cleans up metadata.
  * Returns { playsUpdated, dailyRowsRebuilt, metadataUpdated }.
  */
-function mergeTrackPair(db, { winnerKey, loserKey, artist, title }, metadataByTrackKey) {
+export function mergeTrackPair(db, { winnerKey, loserKey, artist, title }, metadataByTrackKey) {
   const winnerMeta = metadataByTrackKey.get(winnerKey) ?? null;
   const loserMeta = metadataByTrackKey.get(loserKey) ?? null;
 
@@ -1475,6 +1479,438 @@ export function runItunesCanonicalMaintenance({
 }
 
 
+/**
+ * Backfills existing tracks against Deezer.
+ * For each distinct track_key that hasn't been checked recently, queries the Deezer API
+ * and — when a high-confidence match is found — either:
+ *   (a) merges the old key into an existing canonical key, or
+ *   (b) updates artist/title/track_key in-place to the Deezer-clean spelling.
+ *
+ * The run is resumable: tracks with canonical_source='deezer' whose last_checked_utc is
+ * younger than cacheDays are skipped automatically.
+ */
+export async function runBackfillDeezer({
+  dbPath,
+  dryRun = true,
+  limit = null,
+  cacheDays = 30,
+  logger
+}) {
+  const db = openDb(dbPath);
+  const cacheCutoffMs = cacheDays * 24 * 60 * 60 * 1000;
+  const nowIso = isoUtcNow();
+
+  // --- Collect all distinct track_keys from plays + track_metadata ---
+  const trackKeysFromPlays = db.prepare(`
+    select track_key, min(artist) as artist, min(title) as title, count(*) as plays
+    from plays
+    group by track_key
+  `).all();
+
+  const trackKeysFromMeta = db.prepare(`
+    select track_key, artist, title
+    from track_metadata
+  `).all();
+
+  // Build a unified map: track_key -> { artist, title, plays }
+  const trackMap = new Map();
+  for (const row of trackKeysFromPlays) {
+    trackMap.set(row.track_key, { artist: row.artist, title: row.title, plays: Number(row.plays || 0) });
+  }
+  for (const row of trackKeysFromMeta) {
+    if (!trackMap.has(row.track_key)) {
+      trackMap.set(row.track_key, { artist: row.artist, title: row.title, plays: 0 });
+    }
+  }
+
+  // Load all metadata into memory for merge operations
+  const metadataRows = db.prepare('select * from track_metadata').all();
+  const metadataByTrackKey = new Map(metadataRows.map((r) => [r.track_key, r]));
+
+  // Load canonical_map for winner-key lookup
+  const canonicalLookup = new Map();
+  for (const row of listCanonicalMap(db)) {
+    const key = canonicalMapKey(row.canonical_title, row.canonical_primary_artist);
+    canonicalLookup.set(key, row.canonical_track_key);
+  }
+
+  // Load blocked keys
+  const blockedKeys = loadBlockedTrackKeys(db);
+
+  // Determine candidates — skip recently checked ones
+  let candidates = Array.from(trackMap.entries()).map(([trackKey, info]) => ({
+    trackKey,
+    artist: info.artist,
+    title: info.title,
+    plays: info.plays
+  }));
+
+  // Filter: skip tracks already confirmed via Deezer and within cache window
+  candidates = candidates.filter(({ trackKey }) => {
+    const meta = metadataByTrackKey.get(trackKey);
+    if (!meta) return true;
+    if (meta.canonical_source !== 'deezer') return true;
+    const checkedMs = meta.last_checked_utc ? Date.parse(String(meta.last_checked_utc)) : NaN;
+    if (!Number.isFinite(checkedMs)) return true;
+    return (Date.now() - checkedMs) >= cacheCutoffMs;
+  });
+
+  // Sort by play count descending so high-traffic tracks are corrected first
+  candidates.sort((a, b) => b.plays - a.plays);
+  if (limit != null && Number.isFinite(Number(limit)) && Number(limit) > 0) {
+    candidates = candidates.slice(0, Number(limit));
+  }
+
+  const stats = {
+    total: trackMap.size,
+    candidates: candidates.length,
+    skippedCache: trackMap.size - candidates.length,
+    checked: 0,
+    corrected: 0,
+    merged: 0,
+    inPlace: 0,
+    noMatch: 0,
+    errors: 0,
+    playsUpdated: 0,
+    dryRun
+  };
+
+  logger?.info?.({ ...stats, cacheDays, limit }, 'deezer backfill starting');
+
+  for (const { trackKey, artist, title } of candidates) {
+    // Derive the canonical identity for this key the same way the ingest does
+    const normalizedInput = normalizeArtistTitle(artist, title);
+    if (!normalizedInput.artist || !normalizedInput.title) {
+      stats.noMatch += 1;
+      continue;
+    }
+
+    // Skip if the canonical_map key points to a blocked entry
+    const canonicalTitle = normalizeTitleForMatch(normalizedInput.title);
+    const canonicalPrimary = primaryArtist(normalizedInput.artist);
+    const mapKey = canonicalMapKey(canonicalTitle, canonicalPrimary);
+    if (blockedKeys.has(mapKey)) {
+      stats.skippedCache += 1;
+      continue;
+    }
+
+    // Helper: run one Deezer lookup with 429-backoff
+    const deezerLookup = async (a, t) => {
+      try {
+        return await searchTrackOnDeezer(a, t);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('429')) {
+          const backoffMs = 10000;
+          logger?.warn?.({ trackKey, error: msg, backoffMs }, 'deezer 429 — backing off');
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          return await searchTrackOnDeezer(a, t); // throws if still failing → caller handles
+        }
+        throw err;
+      }
+    };
+
+    let deezerMatch = null;
+    try {
+      deezerMatch = await deezerLookup(normalizedInput.artist, normalizedInput.title);
+
+      // If normal order found nothing, try swapped — catches artist/title inversions
+      if (!deezerMatch) {
+        const swapMatch = await deezerLookup(normalizedInput.title, normalizedInput.artist).catch(() => null);
+        if (swapMatch) {
+          deezerMatch = swapMatch;
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger?.warn?.({ trackKey, artist, title, error: msg }, 'deezer lookup error; skipping track');
+      stats.errors += 1;
+      continue;
+    }
+
+    stats.checked += 1;
+
+    if (!deezerMatch) {
+      stats.noMatch += 1;
+      // Mark as checked so future runs skip it within the cache window
+      if (!dryRun) {
+        const existingMeta = metadataByTrackKey.get(trackKey);
+        const metaRow = {
+          track_key: trackKey,
+          artist: normalizedInput.artist,
+          title: normalizedInput.title,
+          verified_exists: existingMeta?.verified_exists ?? null,
+          verification_source: existingMeta?.verification_source ?? null,
+          verification_confidence: existingMeta?.verification_confidence ?? null,
+          external_track_id: existingMeta?.external_track_id ?? null,
+          external_url: existingMeta?.external_url ?? null,
+          artwork_url: existingMeta?.artwork_url ?? null,
+          release_date_utc: existingMeta?.release_date_utc ?? null,
+          genre: existingMeta?.genre ?? null,
+          album: existingMeta?.album ?? null,
+          label: existingMeta?.label ?? null,
+          duration_ms: existingMeta?.duration_ms ?? null,
+          preview_url: existingMeta?.preview_url ?? null,
+          isrc: existingMeta?.isrc ?? null,
+          spotify_track_id: existingMeta?.spotify_track_id ?? null,
+          spotify_confidence: existingMeta?.spotify_confidence ?? null,
+          canonical_source: existingMeta?.canonical_source ?? null,
+          canonical_id: existingMeta?.canonical_id ?? null,
+          popularity_score: existingMeta?.popularity_score ?? null,
+          chart_airplay_rank: existingMeta?.chart_airplay_rank ?? null,
+          chart_single_rank: existingMeta?.chart_single_rank ?? null,
+          chart_country: existingMeta?.chart_country ?? null,
+          social_viral_score: existingMeta?.social_viral_score ?? null,
+          payload_json: existingMeta?.payload_json ?? null,
+          last_checked_utc: nowIso
+        };
+        upsertTrackMetadata(db, metaRow);
+        metadataByTrackKey.set(trackKey, metaRow);
+      }
+      continue;
+    }
+
+    // We have a Deezer match — compute the corrected key
+    const deezerNormalized = normalizeArtistTitle(deezerMatch.artist, deezerMatch.title);
+    if (!deezerNormalized.artist || !deezerNormalized.title) {
+      stats.noMatch += 1;
+      continue;
+    }
+
+    const correctedKey = deezerNormalized.trackKey;
+
+    // If the corrected key is the same as the existing key, just update metadata
+    if (correctedKey === trackKey) {
+      stats.noMatch += 1;
+      if (!dryRun) {
+        const existingMeta = metadataByTrackKey.get(trackKey);
+        const metaRow = {
+          ...(existingMeta ?? {}),
+          track_key: trackKey,
+          artist: deezerNormalized.artist,
+          title: deezerNormalized.title,
+          verified_exists: existingMeta?.verified_exists ?? null,
+          verification_source: existingMeta?.verification_source ?? null,
+          verification_confidence: existingMeta?.verification_confidence ?? null,
+          external_track_id: existingMeta?.external_track_id ?? null,
+          external_url: existingMeta?.external_url ?? null,
+          artwork_url: existingMeta?.artwork_url ?? null,
+          release_date_utc: existingMeta?.release_date_utc ?? null,
+          genre: existingMeta?.genre ?? null,
+          album: existingMeta?.album ?? null,
+          label: existingMeta?.label ?? null,
+          duration_ms: Number.isFinite(deezerMatch.durationMs) ? Math.round(deezerMatch.durationMs) : (existingMeta?.duration_ms ?? null),
+          preview_url: existingMeta?.preview_url ?? null,
+          isrc: deezerMatch.isrc ?? existingMeta?.isrc ?? null,
+          spotify_track_id: existingMeta?.spotify_track_id ?? null,
+          spotify_confidence: existingMeta?.spotify_confidence ?? null,
+          canonical_source: 'deezer',
+          canonical_id: deezerMatch.deezerId ?? null,
+          popularity_score: existingMeta?.popularity_score ?? null,
+          chart_airplay_rank: existingMeta?.chart_airplay_rank ?? null,
+          chart_single_rank: existingMeta?.chart_single_rank ?? null,
+          chart_country: existingMeta?.chart_country ?? null,
+          social_viral_score: existingMeta?.social_viral_score ?? null,
+          payload_json: existingMeta?.payload_json ?? null,
+          last_checked_utc: nowIso
+        };
+        upsertTrackMetadata(db, metaRow);
+        metadataByTrackKey.set(trackKey, metaRow);
+      }
+      continue;
+    }
+
+    stats.corrected += 1;
+
+    // Check if the corrected key already exists as a canonical target (winner exists)
+    const correctedCanonicalTitle = normalizeTitleForMatch(deezerNormalized.title);
+    const correctedCanonicalPrimary = primaryArtist(deezerNormalized.artist);
+    const correctedMapKey = canonicalMapKey(correctedCanonicalTitle, correctedCanonicalPrimary);
+    const existingWinnerKey = canonicalLookup.get(correctedMapKey);
+
+    const winnerKey = existingWinnerKey ?? correctedKey;
+    const isMerge = winnerKey !== trackKey && (existingWinnerKey != null || trackMap.has(correctedKey));
+    const action = isMerge ? 'merge' : 'in-place';
+
+    logger?.info?.({
+      action,
+      oldArtist: artist,
+      oldTitle: title,
+      oldKey: trackKey,
+      newArtist: deezerNormalized.artist,
+      newTitle: deezerNormalized.title,
+      newKey: winnerKey,
+      deezerId: deezerMatch.deezerId,
+      confidence: deezerMatch.confidence,
+      dryRun
+    }, 'deezer backfill correction');
+
+    if (dryRun) {
+      if (isMerge) stats.merged += 1;
+      else stats.inPlace += 1;
+      continue;
+    }
+
+    if (isMerge) {
+      // Merge old key (loser) into winner
+      const tx = db.transaction(() => {
+        const r = mergeTrackPair(
+          db,
+          { winnerKey, loserKey: trackKey, artist: deezerNormalized.artist, title: deezerNormalized.title },
+          metadataByTrackKey
+        );
+        stats.playsUpdated += r.playsUpdated;
+
+        // Update winner's metadata with Deezer info
+        const winnerMeta = metadataByTrackKey.get(winnerKey);
+        const metaRow = {
+          ...(winnerMeta ?? {}),
+          track_key: winnerKey,
+          artist: deezerNormalized.artist,
+          title: deezerNormalized.title,
+          verified_exists: winnerMeta?.verified_exists ?? null,
+          verification_source: winnerMeta?.verification_source ?? null,
+          verification_confidence: winnerMeta?.verification_confidence ?? null,
+          external_track_id: winnerMeta?.external_track_id ?? null,
+          external_url: winnerMeta?.external_url ?? null,
+          artwork_url: winnerMeta?.artwork_url ?? null,
+          release_date_utc: winnerMeta?.release_date_utc ?? null,
+          genre: winnerMeta?.genre ?? null,
+          album: winnerMeta?.album ?? null,
+          label: winnerMeta?.label ?? null,
+          duration_ms: Number.isFinite(deezerMatch.durationMs) ? Math.round(deezerMatch.durationMs) : (winnerMeta?.duration_ms ?? null),
+          preview_url: winnerMeta?.preview_url ?? null,
+          isrc: deezerMatch.isrc ?? winnerMeta?.isrc ?? null,
+          spotify_track_id: winnerMeta?.spotify_track_id ?? null,
+          spotify_confidence: winnerMeta?.spotify_confidence ?? null,
+          canonical_source: 'deezer',
+          canonical_id: deezerMatch.deezerId ?? null,
+          popularity_score: winnerMeta?.popularity_score ?? null,
+          chart_airplay_rank: winnerMeta?.chart_airplay_rank ?? null,
+          chart_single_rank: winnerMeta?.chart_single_rank ?? null,
+          chart_country: winnerMeta?.chart_country ?? null,
+          social_viral_score: winnerMeta?.social_viral_score ?? null,
+          payload_json: winnerMeta?.payload_json ?? null,
+          last_checked_utc: nowIso
+        };
+        upsertTrackMetadata(db, metaRow);
+        metadataByTrackKey.set(winnerKey, metaRow);
+        metadataByTrackKey.delete(trackKey);
+
+        upsertCanonicalMap(db, {
+          canonical_title: correctedCanonicalTitle,
+          canonical_primary_artist: correctedCanonicalPrimary,
+          canonical_track_key: winnerKey,
+          updated_at_utc: nowIso
+        });
+        canonicalLookup.set(correctedMapKey, winnerKey);
+      });
+      tx();
+      stats.merged += 1;
+    } else {
+      // In-place update: remap old trackKey to correctedKey
+      const existingMeta = metadataByTrackKey.get(trackKey);
+      const tx = db.transaction(() => {
+        // Remap plays to the new key and update artist/title
+        const playsChanged = db.prepare(`
+          update plays set track_key = ?, artist = ?, title = ?
+          where track_key = ?
+        `).run(correctedKey, deezerNormalized.artist, deezerNormalized.title, trackKey).changes;
+        stats.playsUpdated += playsChanged;
+
+        // Rebuild daily stats
+        const dailyByStation = db.prepare(`
+          select date_berlin, station_id, sum(plays) as plays
+          from daily_track_stats
+          where track_key in (?, ?)
+          group by date_berlin, station_id
+        `).all(correctedKey, trackKey);
+        if (dailyByStation.length) {
+          db.prepare('delete from daily_track_stats where track_key in (?, ?)').run(correctedKey, trackKey);
+          const ins = db.prepare(`insert into daily_track_stats(date_berlin, station_id, track_key, artist, title, plays) values (?, ?, ?, ?, ?, ?)`);
+          for (const row of dailyByStation) {
+            ins.run(row.date_berlin, row.station_id, correctedKey, deezerNormalized.artist, deezerNormalized.title, Number(row.plays || 0));
+          }
+        }
+        const dailyOverall = db.prepare(`
+          select date_berlin, sum(plays) as plays
+          from daily_overall_track_stats
+          where track_key in (?, ?)
+          group by date_berlin
+        `).all(correctedKey, trackKey);
+        if (dailyOverall.length) {
+          db.prepare('delete from daily_overall_track_stats where track_key in (?, ?)').run(correctedKey, trackKey);
+          const ins = db.prepare(`insert into daily_overall_track_stats(date_berlin, track_key, artist, title, plays) values (?, ?, ?, ?, ?)`);
+          for (const row of dailyOverall) {
+            ins.run(row.date_berlin, correctedKey, deezerNormalized.artist, deezerNormalized.title, Number(row.plays || 0));
+          }
+        }
+
+        // Move or create metadata for corrected key
+        if (existingMeta) {
+          db.prepare('delete from track_metadata where track_key = ?').run(trackKey);
+          metadataByTrackKey.delete(trackKey);
+        }
+        const metaRow = {
+          ...(existingMeta ?? {}),
+          track_key: correctedKey,
+          artist: deezerNormalized.artist,
+          title: deezerNormalized.title,
+          verified_exists: existingMeta?.verified_exists ?? null,
+          verification_source: existingMeta?.verification_source ?? null,
+          verification_confidence: existingMeta?.verification_confidence ?? null,
+          external_track_id: existingMeta?.external_track_id ?? null,
+          external_url: existingMeta?.external_url ?? null,
+          artwork_url: existingMeta?.artwork_url ?? null,
+          release_date_utc: existingMeta?.release_date_utc ?? null,
+          genre: existingMeta?.genre ?? null,
+          album: existingMeta?.album ?? null,
+          label: existingMeta?.label ?? null,
+          duration_ms: Number.isFinite(deezerMatch.durationMs) ? Math.round(deezerMatch.durationMs) : (existingMeta?.duration_ms ?? null),
+          preview_url: existingMeta?.preview_url ?? null,
+          isrc: deezerMatch.isrc ?? existingMeta?.isrc ?? null,
+          spotify_track_id: existingMeta?.spotify_track_id ?? null,
+          spotify_confidence: existingMeta?.spotify_confidence ?? null,
+          canonical_source: 'deezer',
+          canonical_id: deezerMatch.deezerId ?? null,
+          popularity_score: existingMeta?.popularity_score ?? null,
+          chart_airplay_rank: existingMeta?.chart_airplay_rank ?? null,
+          chart_single_rank: existingMeta?.chart_single_rank ?? null,
+          chart_country: existingMeta?.chart_country ?? null,
+          social_viral_score: existingMeta?.social_viral_score ?? null,
+          payload_json: existingMeta?.payload_json ?? null,
+          last_checked_utc: nowIso
+        };
+        upsertTrackMetadata(db, metaRow);
+        metadataByTrackKey.set(correctedKey, metaRow);
+
+        // Register old key → corrected key in canonical_map
+        upsertCanonicalMap(db, {
+          canonical_title: canonicalTitle,
+          canonical_primary_artist: canonicalPrimary,
+          canonical_track_key: correctedKey,
+          updated_at_utc: nowIso
+        });
+        upsertCanonicalMap(db, {
+          canonical_title: correctedCanonicalTitle,
+          canonical_primary_artist: correctedCanonicalPrimary,
+          canonical_track_key: correctedKey,
+          updated_at_utc: nowIso
+        });
+        canonicalLookup.set(mapKey, correctedKey);
+        canonicalLookup.set(correctedMapKey, correctedKey);
+        trackMap.set(correctedKey, { artist: deezerNormalized.artist, title: deezerNormalized.title, plays: (trackMap.get(trackKey)?.plays ?? 0) });
+      });
+      tx();
+      stats.inPlace += 1;
+    }
+  }
+
+  db.close();
+  logger?.info?.({ ...stats }, 'deezer backfill complete');
+  return stats;
+}
+
 export async function runIngest({ configPath, dbPath, logger }) {
   const config = loadConfig(configPath);
   const db = openDb(dbPath);
@@ -1663,6 +2099,77 @@ export async function runIngest({ configPath, dbPath, logger }) {
         let canonicalTrackKey = normalized.trackKey;
         let canonicalArtist = normalized.artist;
         let canonicalTitle = normalized.title;
+
+        // Deezer canonical correction — runs for every track when verification is enabled.
+        // Uses DB-cached result to avoid repeated API calls within the cache window.
+        if (verificationEnabled) {
+          try {
+            const cachedMeta = getTrackMetadata(db, canonicalTrackKey);
+            const cachedDeezerHit =
+              cachedMeta?.canonical_source === 'deezer' &&
+              cachedMeta?.last_checked_utc &&
+              (Date.now() - Date.parse(cachedMeta.last_checked_utc)) < DEEZER_CACHE_MS;
+
+            let deezerMatch = null;
+            if (cachedDeezerHit) {
+              // Reconstruct from cached values — artist/title stored on the metadata row
+              deezerMatch = {
+                artist: cachedMeta.artist,
+                title: cachedMeta.title,
+                deezerId: cachedMeta.canonical_id,
+                isrc: cachedMeta.isrc ?? null
+              };
+            } else {
+              deezerMatch = await searchTrackOnDeezer(normalized.artist, normalized.title).catch(() => null);
+            }
+
+            if (deezerMatch?.artist && deezerMatch?.title) {
+              const deezerNormalized = normalizeArtistTitle(deezerMatch.artist, deezerMatch.title);
+              if (deezerNormalized.artist && deezerNormalized.title) {
+                canonicalArtist = deezerNormalized.artist;
+                canonicalTitle = deezerNormalized.title;
+                canonicalTrackKey = deezerNormalized.trackKey;
+
+                // Persist Deezer result so subsequent plays use the cache
+                if (!cachedDeezerHit) {
+                  upsertTrackMetadata(db, {
+                    track_key: canonicalTrackKey,
+                    artist: canonicalArtist,
+                    title: canonicalTitle,
+                    verified_exists: null,
+                    verification_source: null,
+                    verification_confidence: null,
+                    external_track_id: null,
+                    external_url: null,
+                    artwork_url: null,
+                    release_date_utc: null,
+                    genre: null,
+                    album: null,
+                    label: null,
+                    duration_ms: Number.isFinite(deezerMatch.durationMs) ? Math.round(deezerMatch.durationMs) : null,
+                    preview_url: null,
+                    isrc: deezerMatch.isrc ?? null,
+                    spotify_track_id: null,
+                    spotify_confidence: null,
+                    canonical_source: 'deezer',
+                    canonical_id: deezerMatch.deezerId ?? null,
+                    popularity_score: null,
+                    chart_airplay_rank: null,
+                    chart_single_rank: null,
+                    chart_country: null,
+                    social_viral_score: null,
+                    payload_json: null,
+                    last_checked_utc: isoUtcNow()
+                  });
+                }
+              }
+            }
+          } catch (deezerError) {
+            const deezerMsg = deezerError instanceof Error ? deezerError.message : String(deezerError);
+            logger?.debug?.({ trackKey: canonicalTrackKey, error: deezerMsg }, 'deezer canonical lookup skipped');
+          }
+        }
+
         const canonicalTitleKey = normalizeTitleForMatch(canonicalTitle);
         const canonicalPrimaryArtist = primaryArtist(canonicalArtist);
         const mapKey = canonicalMapKey(canonicalTitleKey, canonicalPrimaryArtist);
@@ -1694,6 +2201,17 @@ export async function runIngest({ configPath, dbPath, logger }) {
               title: canonicalTitle
             });
             verifiedByTrackKey.set(canonicalTrackKey, verified);
+          }
+
+          // Apply swap correction signalled by verifyTrack
+          if (verified.swappedDetected && verified.correctedArtist && verified.correctedTitle) {
+            const swapNormalized = normalizeArtistTitle(verified.correctedArtist, verified.correctedTitle);
+            if (swapNormalized.artist && swapNormalized.title) {
+              canonicalArtist = swapNormalized.artist;
+              canonicalTitle = swapNormalized.title;
+              canonicalTrackKey = swapNormalized.trackKey;
+              logger?.debug?.({ originalArtist: normalized.artist, originalTitle: normalized.title, correctedArtist: canonicalArtist, correctedTitle: canonicalTitle }, 'swap correction applied in ingest');
+            }
           }
 
           if (verified.verifiedExists === false) {

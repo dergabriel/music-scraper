@@ -17,7 +17,8 @@ import {
   runNoisePlayCleanup,
   runPromoMarkerMaintenance,
   runReleaseDateBackfillMaintenance,
-  runAllMaintenance
+  runAllMaintenance,
+  runBackfillDeezer
 } from './services.js';
 import { openDb, dedupeStationToOnePlayPerMinute, dedupeStationByMinGapSeconds } from './db.js';
 
@@ -291,6 +292,30 @@ program
       });
     } catch (err) {
       logger.error({ err: err.message }, 'api failed');
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('backfill-deezer')
+  .option('--db <path>', 'Path to SQLite database', 'music-scraper.sqlite')
+  .option('--dry-run', 'Print planned changes without writing anything (default: true for safety)')
+  .option('--no-dry-run', 'Actually write changes to the database')
+  .option('--limit <number>', 'Maximum number of tracks to process in this run')
+  .option('--cache-days <number>', 'Skip tracks whose Deezer result is younger than this many days', '30')
+  .action(async (opts) => {
+    const dryRun = opts.dryRun !== false;
+    try {
+      const stats = await runBackfillDeezer({
+        dbPath: opts.db,
+        dryRun,
+        limit: opts.limit != null ? Number(opts.limit) : null,
+        cacheDays: Number(opts.cacheDays) || 30,
+        logger
+      });
+      logger.info(stats, dryRun ? 'backfill-deezer dry-run complete' : 'backfill-deezer complete');
+    } catch (err) {
+      logger.error({ err: err.message }, 'backfill-deezer failed');
       process.exitCode = 1;
     }
   });
