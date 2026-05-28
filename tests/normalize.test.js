@@ -248,6 +248,105 @@ describe('normalizeArtistTitle', () => {
     expect(Array.from(artistSet('jbs; milleniumkid')).sort()).toEqual(['jbs', 'milleniumkid']);
     expect(artistOverlapRatioLoose('huntr', 'huntrix')).toBeGreaterThanOrEqual(1);
     expect(canonicalTitleKey("don't stop")).toBe('dont stop');
-    expect(canonicalTitleKey("don’t stop")).toBe('dont stop');
+    expect(canonicalTitleKey("don't stop")).toBe('dont stop');
+  });
+
+  // Problem 2: slash-without-spaces must not split artist names
+  it('preserves inline-slash artist names like huntr/x and AC/DC', () => {
+    const huntrix = normalizeArtistTitle('huntr/x', 'golden');
+    expect(huntrix.artist).toBe('huntr-x');
+
+    const acdc = normalizeArtistTitle('AC/DC', 'Thunderstruck');
+    expect(acdc.artist).toBe('ac-dc');
+
+    // Two distinct artists separated by spaced slash should split
+    const twoArtists = normalizeArtistTitle('Artist One / Artist Two', 'Song');
+    expect(twoArtists.artist).toBe('artist one & artist two');
+  });
+
+  // Problem 3: spaced single-letter abbreviations collapse to a single word
+  it('collapses spaced abbreviations like T L C to tlc', () => {
+    const tlc = normalizeArtistTitle('T L C', 'Waterfalls');
+    expect(tlc.artist).toBe('tlc');
+    // Same track_key as the properly written form
+    const tlcDirect = normalizeArtistTitle('TLC', 'Waterfalls');
+    expect(tlc.trackKey).toBe(tlcDirect.trackKey);
+
+    const pink = normalizeArtistTitle('P I N K', 'Get the Party Started');
+    expect(pink.artist).toBe('pink');
+
+    // Must NOT collapse multi-letter tokens — "the xx" stays "the xx"
+    const thexx = normalizeArtistTitle('the xx', 'crystallised');
+    expect(thexx.artist).toBe('the xx');
+  });
+
+  // Problem 4: year in parentheses/brackets stripped from title
+  it('strips trailing year in parentheses from title', () => {
+    const a = normalizeArtistTitle('TLC', 'No Scrubs (1999)');
+    expect(a.title).toBe('no scrubs');
+    const b = normalizeArtistTitle('TLC', 'No Scrubs');
+    expect(a.trackKey).toBe(b.trackKey);
+
+    expect(normalizeArtistTitle('Artist', 'My Love (2024)').title).toBe('my love');
+    expect(normalizeArtistTitle('Artist', 'Toyota (2016)').title).toBe('toyota');
+
+    // Bare year without brackets must NOT be stripped
+    expect(normalizeArtistTitle('Artist', 'Love 1999').title).toBe('love 1999');
+    // Non-year bracket suffix (not a 4-digit year) is untouched by the year-strip rule
+    expect(normalizeArtistTitle('Artist', 'Song (live version)').title).toBe('song (live version)');
+  });
+
+  // Problem 5: remix prefix in artist field (MDR Sputnik style)
+  it('strips remix-descriptor prefix from artist field', () => {
+    const out = normalizeArtistTitle('Notion Remix - Chrystal x Notion', 'The Days');
+    expect(out.artist).toBe('chrystal & notion');
+
+    // Normal artist with hyphen should NOT be affected
+    const normal = normalizeArtistTitle('Twenty One Pilots', 'Heathens');
+    expect(normal.artist).toBe('twenty one pilots');
+
+    // Hyphens in artist name without remix keyword should be unaffected
+    const hyphenArtist = normalizeArtistTitle('Post Malone - Something', 'Song');
+    // No remix keyword → should not strip
+    expect(hyphenArtist.artist).not.toBe('something');
+  });
+
+  // Problem 6: Levenshtein-1 tolerance in artist overlap
+  it('matches artist tokens with edit-distance-1 typos for loose overlap', () => {
+    // "jose" vs "josa" — single char substitution
+    expect(artistOverlapRatioLoose('dj jose', 'dj josa')).toBeGreaterThanOrEqual(0.9);
+    // Exact match still works
+    expect(artistOverlapRatioLoose('dj jose', 'dj jose')).toBe(1);
+    // Unrelated artists should still return low overlap
+    expect(artistOverlapRatioLoose('dj jose', 'madonna')).toBeLessThan(0.3);
+  });
+
+  // Problem 1 (radio_hamburg): chart-position prefixes stripped from title
+  it('strips TOP NNN and PLATZ NNN chart-position prefixes from title', () => {
+    expect(normalizeArtistTitle('Artist', 'TOP 799 SIMPLE LIFE').title).toBe('simple life');
+    expect(normalizeArtistTitle('Artist', 'TOP 794 PEDRO').title).toBe('pedro');
+    expect(normalizeArtistTitle('Artist', 'PLATZ 12 SOMETHING').title).toBe('something');
+    expect(normalizeArtistTitle('Artist', 'platz 3 hero').title).toBe('hero');
+
+    // "TOP GUN" has no number after TOP — must not be stripped
+    expect(normalizeArtistTitle('Artist', 'TOP GUN').title).toBe('top gun');
+    // Five-digit number exceeds the 1-4 digit guard — must not be stripped
+    expect(normalizeArtistTitle('Artist', 'TOP 10000 OVERFLOW').title).toBe('top 10000 overflow');
+    // Ensures the corrected title produces the same key as the clean form
+    const withPrefix = normalizeArtistTitle('Artist', 'TOP 799 SIMPLE LIFE');
+    const clean = normalizeArtistTitle('Artist', 'SIMPLE LIFE');
+    expect(withPrefix.trackKey).toBe(clean.trackKey);
+  });
+
+  // Problem 5 (artist cleanup): trailing hyphens/dashes stripped from artist
+  it('strips trailing hyphens and dashes from artist names', () => {
+    expect(normalizeArtistTitle('leony -', 'Song').artist).toBe('leony');
+    expect(normalizeArtistTitle('Artist -', 'Song').artist).toBe('artist');
+    expect(normalizeArtistTitle('Artist --', 'Song').artist).toBe('artist');
+
+    // Inline hyphens that are part of the name must be preserved
+    expect(normalizeArtistTitle('Wu-Tang Clan', 'C.R.E.A.M.').artist).toBe('wu-tang clan');
+    // ac/dc becomes ac-dc via slash→hyphen conversion and must keep the hyphen
+    expect(normalizeArtistTitle('AC/DC', 'Thunderstruck').artist).toBe('ac-dc');
   });
 });

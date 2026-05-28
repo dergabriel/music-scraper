@@ -2105,20 +2105,29 @@ export async function runIngest({ configPath, dbPath, logger }) {
         if (verificationEnabled) {
           try {
             const cachedMeta = getTrackMetadata(db, canonicalTrackKey);
-            const cachedDeezerHit =
-              cachedMeta?.canonical_source === 'deezer' &&
+
+            // Any recent metadata row means we've already checked this track — skip the API call.
+            // canonical_source='deezer' is only set on confirmed hits; a stale/null source still
+            // counts as "checked" as long as last_checked_utc is fresh.
+            const metaIsRecent =
               cachedMeta?.last_checked_utc &&
               (Date.now() - Date.parse(cachedMeta.last_checked_utc)) < DEEZER_CACHE_MS;
+            const cachedDeezerHit =
+              metaIsRecent && cachedMeta?.canonical_source === 'deezer';
 
             let deezerMatch = null;
-            if (cachedDeezerHit) {
-              // Reconstruct from cached values — artist/title stored on the metadata row
-              deezerMatch = {
-                artist: cachedMeta.artist,
-                title: cachedMeta.title,
-                deezerId: cachedMeta.canonical_id,
-                isrc: cachedMeta.isrc ?? null
-              };
+            if (metaIsRecent) {
+              // Within cache window: reconstruct from cached values if source is deezer,
+              // otherwise skip the API call entirely (track was recently checked, no match found)
+              if (cachedDeezerHit) {
+                deezerMatch = {
+                  artist: cachedMeta.artist,
+                  title: cachedMeta.title,
+                  deezerId: cachedMeta.canonical_id,
+                  isrc: cachedMeta.isrc ?? null
+                };
+              }
+              // else: recently checked, no deezer match → leave deezerMatch null, skip API
             } else {
               deezerMatch = await searchTrackOnDeezer(normalized.artist, normalized.title).catch(() => null);
             }

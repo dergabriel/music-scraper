@@ -5,7 +5,16 @@ const BRACKET_SUFFIX_PATTERN = /\s*[\[(](?:radio\s*edit|extended\s*mix|remix|mix
 const PROMO_MARKER_PATTERN = /(?:\*+\s*neu\s*\*+|\[\s*neu\s*\]|\(\s*neu\s*\))/gi;
 const PROMO_PREFIX_PATTERN = /^\s*neu\s*[-|:]\s*/i;
 const PROMO_SUFFIX_PATTERN = /\s*[-|:]\s*neu\s*$/i;
-const ARTIST_JOINER_PATTERN = /\s*(?:&|,|;|\/|\\|\+|×|\band\b|\bund\b|\bx\b|\bvs\.?\b|\bwith\b|\bplus\b)\s*/giu;
+// Strips chart-position prefixes injected by some stations into the title field,
+// e.g. radio_hamburg sends "TOP 794 PEDRO" or "PLATZ 12 SOMETHING".
+// Only matches when the keyword is immediately followed by a number and a space,
+// so "TOP GUN" (no number) and "PLATZ" alone are left untouched.
+const CHART_POSITION_PREFIX_PATTERN = /^\s*(?:TOP|PLATZ)\s+\d{1,4}\s+/i;
+// Slash without surrounding spaces is intentionally excluded — it appears in names like
+// "huntr/x", "AC/DC" and should not be split. Only " / " (space-slash-space) is a joiner.
+// \bx\b is replaced with the explicit space-bounded form so that "huntr-x" is not split
+// on the x (hyphen is a word-boundary but not a meaningful joiner here).
+const ARTIST_JOINER_PATTERN = /(?:&|,|;|\s\/\s|\\|\+|×|\s+and\s+|\s+und\s+|\s+x\s+|\s+vs\.?\s+|\s+with\s+|\s+plus\s+)/giu;
 const NOISE_PATTERN =
   /(https?:\/\/|www\.|freestar|window\.|function\(|oauth|xmlhttprequest|onlineradiobox|cookie|benutzer vereinbarung|privatsphäre|serververbindung|installieren sie|\bandroid\b|\bios\b|contentgraph|coverimageurl|streams?\s*[:=])/i;
 const JINGLE_PATTERN =
@@ -110,6 +119,10 @@ function stripPromoMarkers(input) {
     .replace(PROMO_SUFFIX_PATTERN, ' ');
 }
 
+function stripChartPositionPrefix(input) {
+  return String(input ?? '').replace(CHART_POSITION_PREFIX_PATTERN, '').trim();
+}
+
 function stripOuterQuotes(input) {
   return String(input ?? '')
     .replace(/^\s*["'“”„`]+\s*/g, '')
@@ -173,6 +186,14 @@ function stripTrailingYearEditionTag(input) {
   return String(input ?? '').replace(/\s'2[0-9]\s*$/u, '').trim();
 }
 
+// Strips a bare four-digit year in parentheses or brackets at the very end of a title.
+// Only matches 19xx and 20xx to avoid stripping legitimate content like "(12 Days)" etc.
+const TRAILING_YEAR_BRACKET_PATTERN = /\s*[\[(]\s*((?:19|20)\d{2})\s*[\])]\s*$/;
+
+function stripTrailingYearBracket(input) {
+  return String(input ?? '').replace(TRAILING_YEAR_BRACKET_PATTERN, '').trim();
+}
+
 function stripEventParentheticalSuffix(input) {
   const source = String(input ?? '');
   const match = source.match(EVENT_TRAILING_BLOCK_PATTERN);
@@ -209,16 +230,29 @@ function stripTrailingTitlePunctuation(input) {
 function canonicalizeArtistPart(input) {
   let part = normalizeUnicode(input)
     .toLowerCase()
-    .replace(/["'`´'“”„]/g, ' ')
+    .replace(/[“'`´'””„]/g, ' ')
+    // Preserve inline slashes (no surrounding whitespace) as hyphens so huntr/x stays intact.
+    // Spaced slashes (“ / “) are already handled as joiners upstream and won't reach here.
+    .replace(/(?<!\s)\/(?!\s)/g, '-')
     .replace(/[^\p{L}\p{N}\s-]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (!part) return '';
 
   const tokens = part.split(' ').filter(Boolean);
-  if (tokens.length === 2 && tokens[1] === 'beats') {
+
+  // Collapse spaced abbreviations: all tokens are single letters → join without spaces
+  // e.g. “t l c” → “tlc”, “p i n k” → “pink”
+  // Guard: only when every token is exactly one Unicode letter (no digits, no hyphens)
+  if (tokens.length >= 2 && tokens.every((t) => /^\p{L}$/u.test(t))) {
+    part = tokens.join('');
+  } else if (tokens.length === 2 && tokens[1] === 'beats') {
     part = tokens[0];
   }
+
+  // Remove stray trailing hyphens/dashes left over from parser artefacts (e.g. “leony -”)
+  part = part.replace(/[\s\-–—]+$/, '').trim();
+
   return part.trim();
 }
 
@@ -251,10 +285,28 @@ export function artistSet(artistInput) {
   return new Set(getArtistParts(artistInput));
 }
 
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
 function artistTokensLooseMatch(a, b) {
   if (a === b) return true;
   if (a.length < 4 || b.length < 4) return false;
-  return a.startsWith(b) || b.startsWith(a);
+  if (a.startsWith(b) || b.startsWith(a)) return true;
+  // Accept single-character edits (typo/variant) for tokens of length >= 4
+  return levenshtein(a, b) <= 1;
 }
 
 export function artistOverlapRatioLoose(a, b) {
@@ -279,6 +331,15 @@ export function artistOverlapRatioLoose(a, b) {
     }
   }
   return common / Math.max(1, Math.min(aa.length, bb.length));
+}
+
+// Strips a leading remix/edit descriptor that ended up in the artist field.
+// Example: "Notion Remix - Chrystal x Notion" → "Chrystal x Notion"
+// Pattern: <word(s) containing remix|edit|version|mix> followed by " - "
+const ARTIST_REMIX_PREFIX_PATTERN = /^[^-]{1,60}\b(?:remix|edit|version|mix)\b[^-]{0,20}\s+-\s+/i;
+
+function stripArtistRemixPrefix(input) {
+  return String(input ?? '').replace(ARTIST_REMIX_PREFIX_PATTERN, '').trim();
 }
 
 function stripDuplicatedArtistPrefix(title, artist) {
@@ -432,11 +493,13 @@ export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', st
   const titleSanitized = stripTracklistPrefix(stripOuterQuotes(titleRaw ?? ''));
   const titleWithoutDuplicateArtist = stripDuplicatedArtistPrefix(titleSanitized, artistSanitized);
 
-  const artistBase = stripStationTerms(stripPromoMarkers(stripBracketSuffix(stripFeat(artistSanitized))), stationName, stationId);
+  const artistBase = stripStationTerms(stripPromoMarkers(stripArtistRemixPrefix(stripBracketSuffix(stripFeat(artistSanitized)))), stationName, stationId);
   const titlePrepared = stripStationTerms(
     stripPromoMarkers(
-      stripBracketSuffix(
-        stripFeat(titleWithoutDuplicateArtist)
+      stripChartPositionPrefix(
+        stripBracketSuffix(
+          stripFeat(titleWithoutDuplicateArtist)
+        )
       )
     ),
     stationName,
@@ -445,10 +508,12 @@ export function normalizeArtistTitle(artistRaw, titleRaw, { stationName = '', st
   const titleBase = clean(
     stripTrailingTitlePunctuation(
       stripTrailingYearEditionTag(
-        stripEditionParentheses(
-          stripEventParentheticalSuffix(
-            stripDateEventSyntax(
-              stripShortParentheticalSubtitle(titlePrepared)
+        stripTrailingYearBracket(
+          stripEditionParentheses(
+            stripEventParentheticalSuffix(
+              stripDateEventSyntax(
+                stripShortParentheticalSubtitle(titlePrepared)
+              )
             )
           )
         )
